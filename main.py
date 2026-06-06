@@ -39,57 +39,70 @@ SCRIPT_CACHE_FILE = os.path.join(ASSETS_DIR, "script_cache.json")
 TIMESTAMPS_CACHE_FILE = os.path.join(ASSETS_DIR, "timestamps_cache.json")
 
 # ==============================================================================
-# MODEL ROUTING (FREE TIER OPTIMIZED)
+# MODEL ROUTING & API KEY CYCLING CONFIGURATION
 # ==============================================================================
-# 🚀 FIX: Mapped to actual, currently available Google AI Studio Free Tier models.
 ROUTING_LOGIC = {
-    "heavy_reasoning": ["gemini-3.5-flash","gemini-2.5-flash","gemini-3.1-flash-lite", "gemini-2.0-flash", "gemini-1.5-flash"],
+    "heavy_reasoning": ["gemini-1.5-pro","gemini-3.5-flash","gemini-2.5-flash","gemini-3.1-flash-lite", "gemini-2.0-flash", "gemini-1.5-flash"],
     "fast_vision": ["gemini-3.5-flash","gemini-2.5-flash","gemini-3.1-flash-lite", "gemini-2.0-flash", "gemini-1.5-flash"]
 }
+
+# 🚀 Load keys as lists. Use commas in your .env file: ELEVENLABS_API_KEYS="key1,key2,key3"
+GEMINI_KEYS = [k.strip() for k in os.environ.get("GEMINI_API_KEYS", os.environ.get("GEMINI_API_KEY", "")).split(",") if k.strip()]
+ELEVEN_KEYS = [k.strip() for k in os.environ.get("ELEVENLABS_API_KEYS", os.environ.get("ELEVENLABS_API_KEY", "")).split(",") if k.strip()]
+PEXELS_KEYS = [k.strip() for k in os.environ.get("PEXELS_API_KEYS", os.environ.get("PEXELS_API_KEY", "")).split(",") if k.strip()]
+
+if not GEMINI_KEYS or not ELEVEN_KEYS or not PEXELS_KEYS:
+    print("❌ API Key Error: Missing one or more API key lists. Please check your .env file.")
+    exit(1)
+
+# Global trackers for key rotation
+current_gemini_idx = 0
+current_eleven_idx = 0
+current_pexels_idx = 0
 
 os.makedirs(ASSETS_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-try:
-    gemini_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
-    ELEVEN_KEY = os.environ.get("ELEVENLABS_API_KEY")
-    PEXELS_KEY = os.environ.get("PEXELS_API_KEY")
-    
-    if not ELEVEN_KEY or not PEXELS_KEY:
-        raise KeyError("One or more keys are missing or empty.")
-except Exception as e:
-    print(f"❌ API Key Error: {e}. Please check your .env file.")
-    exit(1)
-
 # ==============================================================================
-# RATE LIMIT & SERVER OVERLOAD WATERFALL ROUTER
+# RATE LIMIT, SERVER OVERLOAD & KEY CYCLING WATERFALL
 # ==============================================================================
 
 def generate_with_fallback(contents, model_queue, config=None):
-    for i, model_name in enumerate(model_queue):
-        try:
-            print(f"   🔄 Attempting API call with: [{model_name}]...")
-            response = gemini_client.models.generate_content(
-                model=model_name,
-                contents=contents,
-                config=config
-            )
-            print(f"   ✅ Success using [{model_name}]")
-            return response
-            
-        except APIError as e:
-            err_str = str(e).lower()
-            if any(k in err_str for k in ["429", "503", "500", "quota", "exhausted", "unavailable", "overloaded"]):
-                if i < len(model_queue) - 1:
-                    print(f"   ⚠️ Model [{model_name}] is busy/rate-limited. Seamlessly falling back...")
-                    time.sleep(3) 
+    global current_gemini_idx
+    
+    while current_gemini_idx < len(GEMINI_KEYS):
+        current_key = GEMINI_KEYS[current_gemini_idx]
+        temp_client = genai.Client(api_key=current_key)
+        
+        print(f"   🔑 Using Gemini Key #{current_gemini_idx + 1}/{len(GEMINI_KEYS)}")
+        
+        for i, model_name in enumerate(model_queue):
+            try:
+                print(f"   🔄 Attempting API call with: [{model_name}]...")
+                response = temp_client.models.generate_content(
+                    model=model_name,
+                    contents=contents,
+                    config=config
+                )
+                print(f"   ✅ Success using [{model_name}]")
+                return response
+                
+            except APIError as e:
+                err_str = str(e).lower()
+                if any(k in err_str for k in ["429", "503", "500", "404", "not_found", "not found", "quota", "exhausted", "unavailable", "overloaded"]):
+                    print(f"   ⚠️ Model [{model_name}] rejected the call or is missing. Falling back to next model...")
+                    time.sleep(2) 
                     continue
                 else:
-                    print("   ❌ CRITICAL: All fallback models are currently unavailable or exhausted.")
+                    print(f"   ❌ Fatal API Error on [{model_name}]: {e}")
                     raise e
-            else:
-                print(f"   ❌ Fatal API Error on [{model_name}]: {e}")
-                raise e
+                    
+        # If the inner loop finishes, it means ALL models failed for THIS specific key
+        print(f"   ⚠️ All models exhausted for Gemini Key #{current_gemini_idx + 1}. Switching to next API Key...")
+        current_gemini_idx += 1
+        
+    print("❌ CRITICAL: All Gemini models across ALL provided API keys are exhausted.")
+    raise Exception("Gemini API limits reached on all keys.")
 
 # ==============================================================================
 # STEP 1: SOURCING & DEDUPLICATION
@@ -163,6 +176,7 @@ def generate_topic_script_tags(history):
 # ==============================================================================
 
 def generate_audio_and_captions(script_text):
+    global current_eleven_idx
     audio_path = os.path.join(ASSETS_DIR, "voiceover.mp3")
     
     if DEV_MODE and os.path.exists(audio_path) and os.path.exists(TIMESTAMPS_CACHE_FILE):
@@ -174,11 +188,6 @@ def generate_audio_and_captions(script_text):
     print("🎙️ Generating voiceover and extracting native word-level timestamps via ElevenLabs...")
     
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}/with-timestamps"
-    headers = {
-        "Content-Type": "application/json",
-        "xi-api-key": ELEVEN_KEY
-    }
-    
     data = {
         "text": script_text,
         "model_id": "eleven_multilingual_v2",
@@ -190,71 +199,102 @@ def generate_audio_and_captions(script_text):
         }
     }
     
-    resp = requests.post(url, json=data, headers=headers)
-    
-    if not resp.ok:
-        print(f"❌ ElevenLabs API failed! Status Code: {resp.status_code}")
-        print(f"Response: {resp.text}")
-        resp.raise_for_status()
+    while current_eleven_idx < len(ELEVEN_KEYS):
+        current_key = ELEVEN_KEYS[current_eleven_idx]
+        headers = {
+            "Content-Type": "application/json",
+            "xi-api-key": current_key
+        }
         
-    response_data = resp.json()
-    
-    # Decode and save the audio
-    audio_bytes = base64.b64decode(response_data["audio_base64"])
-    with open(audio_path, 'wb') as f:
-        f.write(audio_bytes)
+        print(f"   🔑 Attempting ElevenLabs Key #{current_eleven_idx + 1}/{len(ELEVEN_KEYS)}...")
+        resp = requests.post(url, json=data, headers=headers)
         
-    # Process character alignments into word-level timestamps
-    alignment = response_data["alignment"]
-    chars = alignment["characters"]
-    starts = alignment["character_start_times_seconds"]
-    ends = alignment["character_end_times_seconds"]
-
-    words = []
-    current_word = ""
-    word_start = None
-
-    for i, char in enumerate(chars):
-        if char == " ":
-            if current_word:
-                words.append((word_start, ends[i-1], current_word))
-                current_word = ""
-                word_start = None
-        else:
-            if current_word == "":
-                word_start = starts[i]
-            current_word += char
-
-    if current_word:
-        words.append((word_start, ends[-1], current_word))
-
-    # Stitch words into 1-2 word fast-paced visual chunks
-    subs = []
-    temp_words = []
-    chunk_start = 0
-
-    for w_start, w_end, word in words:
-        if len(temp_words) == 0:
-            chunk_start = w_start
-        
-        temp_words.append(word)
-
-        if len(temp_words) >= 2 or word[-1] in ".!?":
-            subs.append([chunk_start, w_end, " ".join(temp_words)])
-            temp_words = []
+        if resp.status_code in [401, 402, 429]:
+            print(f"   ⚠️ ElevenLabs Key #{current_eleven_idx + 1} exhausted or rate limited. Switching keys...")
+            current_eleven_idx += 1
+            time.sleep(1)
+            continue
             
-    if temp_words:
-        subs.append([chunk_start, words[-1][1], " ".join(temp_words)])
+        if not resp.ok:
+            print(f"❌ ElevenLabs API failed! Status Code: {resp.status_code}")
+            print(f"Response: {resp.text}")
+            resp.raise_for_status()
+            
+        response_data = resp.json()
+        
+        audio_bytes = base64.b64decode(response_data["audio_base64"])
+        with open(audio_path, 'wb') as f:
+            f.write(audio_bytes)
+            
+        alignment = response_data["alignment"]
+        chars = alignment["characters"]
+        starts = alignment["character_start_times_seconds"]
+        ends = alignment["character_end_times_seconds"]
 
-    with open(TIMESTAMPS_CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump(subs, f, indent=4)
+        words = []
+        current_word = ""
+        word_start = None
 
-    print("✅ Audio and mathematically perfect captions generated.")
-    return audio_path, subs
+        for i, char in enumerate(chars):
+            if char == " ":
+                if current_word:
+                    words.append((word_start, ends[i-1], current_word))
+                    current_word = ""
+                    word_start = None
+            else:
+                if current_word == "":
+                    word_start = starts[i]
+                current_word += char
+
+        if current_word:
+            words.append((word_start, ends[-1], current_word))
+
+        subs = []
+        temp_words = []
+        chunk_start = 0
+
+        for w_start, w_end, word in words:
+            if len(temp_words) == 0:
+                chunk_start = w_start
+            
+            temp_words.append(word)
+
+            if len(temp_words) >= 2 or word[-1] in ".!?":
+                subs.append([chunk_start, w_end, " ".join(temp_words)])
+                temp_words = []
+                
+        if temp_words:
+            subs.append([chunk_start, words[-1][1], " ".join(temp_words)])
+
+        with open(TIMESTAMPS_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(subs, f, indent=4)
+
+        print("✅ Audio and mathematically perfect captions generated.")
+        return audio_path, subs
+
+    raise Exception("❌ CRITICAL: All ElevenLabs keys are exhausted.")
 
 # ==============================================================================
 # STEP 4: B-ROLL SOURCING (PEXELS)
 # ==============================================================================
+
+def get_pexels_data(url):
+    global current_pexels_idx
+    while current_pexels_idx < len(PEXELS_KEYS):
+        current_key = PEXELS_KEYS[current_pexels_idx]
+        headers = {"Authorization": current_key}
+        resp = requests.get(url, headers=headers)
+        
+        if resp.status_code == 429:
+            print(f"   ⚠️ Pexels Key #{current_pexels_idx + 1} rate limited. Switching keys...")
+            current_pexels_idx += 1
+            time.sleep(2)
+            continue
+            
+        resp.raise_for_status()
+        return resp.json()
+        
+    raise Exception("❌ CRITICAL: All Pexels API keys exhausted.")
 
 def download_b_roll(tags): 
     required = 16
@@ -266,7 +306,6 @@ def download_b_roll(tags):
             return existing_broll[:required]
 
     print(f"🎬 Sourcing strictly ONE video per tag slot to maintain sync...")
-    headers = {"Authorization": PEXELS_KEY}
     downloaded = []
     
     tag_map = {
@@ -297,9 +336,7 @@ def download_b_roll(tags):
                 
             url = f"https://api.pexels.com/videos/search?query={query}&orientation=portrait&per_page=5"
             try:
-                resp = requests.get(url, headers=headers)
-                resp.raise_for_status()
-                data = resp.json()
+                data = get_pexels_data(url)
                 
                 for video in data.get('videos', []):
                     if video.get('duration', 0) < 3: 
@@ -355,16 +392,17 @@ def verify_b_roll(video_paths, topic):
         cv2.imwrite(frame_path, frame)
         
         try:
-            sample_file = gemini_client.files.upload(file=frame_path)
+            with open(frame_path, "rb") as f:
+                image_bytes = f.read()
+                
             prompt = f"Does this image visually fit as background footage for a mystery story about '{topic}'? Answer ONLY 'YES' or 'NO'."
             
             response = generate_with_fallback(
-                contents=[sample_file, prompt],
+                contents=[types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"), prompt],
                 model_queue=ROUTING_LOGIC["fast_vision"]
             )
             
             answer = response.text.strip().upper()
-            gemini_client.files.delete(name=sample_file.name)
             
             if "YES" in answer:
                 print(f"   ✅ QC Accepted: {vid}")
@@ -430,18 +468,60 @@ def assemble_video(audio_path, valid_videos, subs_data, final_title):
         final_visual = final_visual.subclip(0, audio_duration)
     
     text_clips = []
+    
+    # 🎬 SUBTLE KINETIC POP: Scales from 85% to 105% in 0.05s, settles to 100% by 0.1s
+    def snappy_pop(t):
+        if t < 0.05:
+            return 0.85 + 4.0 * t  
+        elif t < 0.1:
+            return 1.05 - 1.0 * (t - 0.05) 
+        return 1.0
+
     for start, end, text in subs_data:
         if end <= start: continue
         if start > audio_duration: break
         end = min(end, audio_duration)
         
-        # 🚀 Viral Font Aesthetic: Arial-Bold, centered, massive stroke
-        txt_clip = TextClip(text, fontsize=110, color='white', font='Arial-Bold', 
-                            stroke_color='black', stroke_width=5, 
-                            size=(950, None), method='caption')
+        # 🚀 THE 3D CAPCUT COMPOSITE UPGRADE
+        # We must build a container for each word to perfectly stack the shadow, stroke, and fill
         
-        txt_clip = txt_clip.set_start(start).set_end(end).set_position(('center', 'center'))
-        text_clips.append(txt_clip)
+        raw_text = text.upper()
+        font_choice = 'Arial-Black'
+        font_size = 130
+        tight_kerning = -5
+        box_width = 850
+        
+        # Layer 1: The Hard Drop Shadow (100% opacity, thick, shifted 8px Down & Right)
+        txt_shadow = TextClip(raw_text, fontsize=font_size, color='black', font=font_choice, 
+                          stroke_color='black', stroke_width=20, kerning=tight_kerning,
+                          size=(box_width, None), method='caption')
+        txt_shadow = txt_shadow.set_position((8, 8))
+        
+        # Layer 2: The Outline Stroke (Thick black outline to stop inward bleeding)
+        txt_stroke = TextClip(raw_text, fontsize=font_size, color='black', font=font_choice, 
+                          stroke_color='black', stroke_width=20, kerning=tight_kerning,
+                          size=(box_width, None), method='caption')
+        txt_stroke = txt_stroke.set_position((0, 0))
+
+        # Layer 3: The Solid Yellow Fill (#FFFF00, zero stroke)
+        txt_fill = TextClip(raw_text, fontsize=font_size, color='#FFFF00', font=font_choice, 
+                          stroke_width=0, kerning=tight_kerning,
+                          size=(box_width, None), method='caption')
+        txt_fill = txt_fill.set_position((0, 0))
+        
+        # Group them in a perfectly sized mini-container to maintain the 3D physics
+        word_clip = CompositeVideoClip(
+            [txt_shadow, txt_stroke, txt_fill], 
+            size=(txt_stroke.w + 16, txt_stroke.h + 16)
+        )
+        
+        # Apply the snappy bounce animation to the entire 3D grouping simultaneously
+        word_clip = word_clip.resize(snappy_pop)
+        
+        # Center the animated 3D word block directly in the middle of the main 9:16 video
+        word_clip = word_clip.set_position(('center', 'center')).set_start(start).set_end(end)
+        
+        text_clips.append(word_clip)
         
     final_video = CompositeVideoClip([final_visual] + text_clips)
     
