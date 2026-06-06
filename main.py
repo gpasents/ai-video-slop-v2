@@ -4,6 +4,7 @@ import time
 import uuid
 import requests
 import cv2
+import base64
 from dotenv import load_dotenv
 
 # Using the brand new, officially supported Google GenAI SDK
@@ -35,13 +36,15 @@ ASSETS_DIR = "assets"
 OUTPUT_DIR = "output"
 HISTORY_FILE = "history.json"
 SCRIPT_CACHE_FILE = os.path.join(ASSETS_DIR, "script_cache.json")
+TIMESTAMPS_CACHE_FILE = os.path.join(ASSETS_DIR, "timestamps_cache.json")
 
 # ==============================================================================
-# MODEL ROUTING (GEMINI 3.5/2.5 FRONTIER TIER)
+# MODEL ROUTING (FREE TIER OPTIMIZED)
 # ==============================================================================
+# 🚀 FIX: Mapped to actual, currently available Google AI Studio Free Tier models.
 ROUTING_LOGIC = {
-    "heavy_reasoning": ["gemini-3.5-flash", "gemini-2.5-pro", "gemini-2.5-flash"],
-    "fast_vision": ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash"]
+    "heavy_reasoning": ["gemini-3.5-flash","gemini-2.5-flash","gemini-3.1-flash-lite", "gemini-2.0-flash", "gemini-1.5-flash"],
+    "fast_vision": ["gemini-3.5-flash","gemini-2.5-flash","gemini-3.1-flash-lite", "gemini-2.0-flash", "gemini-1.5-flash"]
 }
 
 os.makedirs(ASSETS_DIR, exist_ok=True)
@@ -59,14 +62,10 @@ except Exception as e:
     exit(1)
 
 # ==============================================================================
-# RATE LIMIT WATERFALL ROUTER
+# RATE LIMIT & SERVER OVERLOAD WATERFALL ROUTER
 # ==============================================================================
 
 def generate_with_fallback(contents, model_queue, config=None):
-    """
-    Attempts to generate content using a queue of models. 
-    If a 429 (Rate Limit) is hit, it falls back to the next model in the list.
-    """
     for i, model_name in enumerate(model_queue):
         try:
             print(f"   🔄 Attempting API call with: [{model_name}]...")
@@ -80,13 +79,13 @@ def generate_with_fallback(contents, model_queue, config=None):
             
         except APIError as e:
             err_str = str(e).lower()
-            if "429" in err_str or "quota" in err_str or "exhausted" in err_str:
+            if any(k in err_str for k in ["429", "503", "500", "quota", "exhausted", "unavailable", "overloaded"]):
                 if i < len(model_queue) - 1:
-                    print(f"   ⚠️ Rate limited on [{model_name}]. Seamlessly falling back...")
-                    time.sleep(2) 
+                    print(f"   ⚠️ Model [{model_name}] is busy/rate-limited. Seamlessly falling back...")
+                    time.sleep(3) 
                     continue
                 else:
-                    print("   ❌ CRITICAL: All fallback models have exhausted their rate limits.")
+                    print("   ❌ CRITICAL: All fallback models are currently unavailable or exhausted.")
                     raise e
             else:
                 print(f"   ❌ Fatal API Error on [{model_name}]: {e}")
@@ -127,7 +126,6 @@ def generate_topic_script_tags(history):
 
     print("🧠 Brainstorming unique script with hyper-paced 16-clip structure...")
     
-    # 🚀 FIX: Forced EXACTLY 16 NOUNS to guarantee a rapid 2.8-second cut rate
     prompt = f"""
     You are a viral YouTube Shorts producer. Create a 45-second script similar to the 'Starbucks glitch' story: fast-paced, mysterious, 'did you know?' style storytelling.
     Do NOT use any of these past topics: {json.dumps(history)}
@@ -161,27 +159,35 @@ def generate_topic_script_tags(history):
     return data
 
 # ==============================================================================
-# STEP 3: VOICEOVER (ELEVENLABS)
+# STEP 3 & 6 COMBINED: VOICEOVER & FORCED ALIGNMENT CAPTIONS
 # ==============================================================================
 
-def generate_voiceover(script_text):
+def generate_audio_and_captions(script_text):
     audio_path = os.path.join(ASSETS_DIR, "voiceover.mp3")
     
-    if DEV_MODE and os.path.exists(audio_path):
-        print("♻️ DEV MODE: Using existing voiceover file (Skipping ElevenLabs API)...")
-        return audio_path
+    if DEV_MODE and os.path.exists(audio_path) and os.path.exists(TIMESTAMPS_CACHE_FILE):
+        print("♻️ DEV MODE: Using existing voiceover and alignment data...")
+        with open(TIMESTAMPS_CACHE_FILE, "r", encoding="utf-8") as f:
+            subs = json.load(f)
+        return audio_path, subs
 
-    print("🎙️ Generating human-like voiceover via ElevenLabs...")
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}"
+    print("🎙️ Generating voiceover and extracting native word-level timestamps via ElevenLabs...")
+    
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}/with-timestamps"
     headers = {
-        "Accept": "audio/mpeg",
         "Content-Type": "application/json",
         "xi-api-key": ELEVEN_KEY
     }
+    
     data = {
         "text": script_text,
         "model_id": "eleven_multilingual_v2",
-        "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}
+        "voice_settings": {
+            "stability": 0.25, 
+            "similarity_boost": 0.85, 
+            "style": 0.50,
+            "use_speaker_boost": True
+        }
     }
     
     resp = requests.post(url, json=data, headers=headers)
@@ -190,18 +196,67 @@ def generate_voiceover(script_text):
         print(f"❌ ElevenLabs API failed! Status Code: {resp.status_code}")
         print(f"Response: {resp.text}")
         resp.raise_for_status()
+        
+    response_data = resp.json()
     
+    # Decode and save the audio
+    audio_bytes = base64.b64decode(response_data["audio_base64"])
     with open(audio_path, 'wb') as f:
-        f.write(resp.content)
-    print("✅ Voiceover generated.")
-    return audio_path
+        f.write(audio_bytes)
+        
+    # Process character alignments into word-level timestamps
+    alignment = response_data["alignment"]
+    chars = alignment["characters"]
+    starts = alignment["character_start_times_seconds"]
+    ends = alignment["character_end_times_seconds"]
+
+    words = []
+    current_word = ""
+    word_start = None
+
+    for i, char in enumerate(chars):
+        if char == " ":
+            if current_word:
+                words.append((word_start, ends[i-1], current_word))
+                current_word = ""
+                word_start = None
+        else:
+            if current_word == "":
+                word_start = starts[i]
+            current_word += char
+
+    if current_word:
+        words.append((word_start, ends[-1], current_word))
+
+    # Stitch words into 1-2 word fast-paced visual chunks
+    subs = []
+    temp_words = []
+    chunk_start = 0
+
+    for w_start, w_end, word in words:
+        if len(temp_words) == 0:
+            chunk_start = w_start
+        
+        temp_words.append(word)
+
+        if len(temp_words) >= 2 or word[-1] in ".!?":
+            subs.append([chunk_start, w_end, " ".join(temp_words)])
+            temp_words = []
+            
+    if temp_words:
+        subs.append([chunk_start, words[-1][1], " ".join(temp_words)])
+
+    with open(TIMESTAMPS_CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump(subs, f, indent=4)
+
+    print("✅ Audio and mathematically perfect captions generated.")
+    return audio_path, subs
 
 # ==============================================================================
 # STEP 4: B-ROLL SOURCING (PEXELS)
 # ==============================================================================
 
 def download_b_roll(tags): 
-    # 🚀 FIX: Bumped to 16 required clips for rapid-fire visual pacing
     required = 16
     
     if DEV_MODE:
@@ -214,7 +269,6 @@ def download_b_roll(tags):
     headers = {"Authorization": PEXELS_KEY}
     downloaded = []
     
-    # 🧠 Tag Translation Map
     tag_map = {
         "atm machine keypad": ["atm machine", "atm keypad", "insert credit card"],
         "writing paper check": ["writing check", "signing document", "pen on paper"],
@@ -225,16 +279,13 @@ def download_b_roll(tags):
         "police sirens": ["police lights", "siren flashing", "cop car"]
     }
 
-    # Extended fallback padding in case Gemini fails to generate exactly 16, or a Pexels query returns 0 results
     fallback_tags = ["cinematic abstract", "dark city street", "neon lights", "cyberpunk code", "mysterious shadow", "fast cars"]
     tags.extend(fallback_tags)
     
-    # We only care about the first 16 valid slots to ensure perfect pacing
     for i, tag in enumerate(tags[:required]):
         print(f"\n   🔍 Searching Slot {i+1}/{required} for tag: '{tag}'")
         
         search_queries = [tag, tag.split()[0], "cinematic abstract dark"]
-        # Use our tag map to prioritize better search queries if available
         if tag.lower() in tag_map:
             search_queries = tag_map[tag.lower()] + search_queries
         
@@ -334,71 +385,10 @@ def verify_b_roll(video_paths, topic):
     return valid_videos
 
 # ==============================================================================
-# STEP 6: CAPTIONS & SRT GENERATION
-# ==============================================================================
-
-def generate_captions(audio_path, script_text):
-    srt_path = os.path.join(ASSETS_DIR, "captions.srt")
-    
-    if DEV_MODE and os.path.exists(srt_path):
-        print("♻️ DEV MODE: Using existing SRT captions file (Skipping Gemini API)...")
-        return srt_path
-
-    print("📝 Uploading audio to calculate SRT timings...")
-    audio_file = gemini_client.files.upload(file=audio_path)
-    
-    while audio_file.state.name == "PROCESSING":
-        time.sleep(2)
-        audio_file = gemini_client.files.get(name=audio_file.name)
-        
-    prompt = f"""Listen to the audio. Generate a highly accurate SRT subtitle file for the following script. 
-    Script:
-    {script_text}
-    
-    Output ONLY the raw SRT text format (no markdown blocks, no explanations). 
-    Limit each subtitle block to 3-5 words for fast-paced short-form video style."""
-    
-    response = generate_with_fallback(
-        contents=[audio_file, prompt],
-        model_queue=ROUTING_LOGIC["heavy_reasoning"]
-    )
-    
-    srt_content = response.text.replace("```srt", "").replace("```", "").strip()
-    gemini_client.files.delete(name=audio_file.name)
-    
-    with open(srt_path, "w", encoding="utf-8") as f:
-        f.write(srt_content)
-    print("✅ Captions generated.")
-    return srt_path
-
-def parse_time(time_str):
-    time_str = time_str.replace(',', '.')
-    parts = time_str.split(':')
-    return float(parts[0])*3600 + float(parts[1])*60 + float(parts[2])
-
-def parse_srt(srt_file):
-    with open(srt_file, "r", encoding="utf-8") as f:
-        blocks = f.read().strip().split("\n\n")
-        
-    subs = []
-    for block in blocks:
-        lines = [l.strip() for l in block.split("\n") if l.strip()]
-        if len(lines) >= 3:
-            times = lines[1].split(" --> ")
-            if len(times) == 2:
-                try:
-                    start, end = parse_time(times[0]), parse_time(times[1])
-                    text = " ".join(lines[2:])
-                    subs.append((start, end, text))
-                except:
-                    pass
-    return subs
-
-# ==============================================================================
 # STEP 7: VIDEO ASSEMBLY (HYPER-PACING ENGINE)
 # ==============================================================================
 
-def assemble_video(audio_path, valid_videos, srt_path, final_title):
+def assemble_video(audio_path, valid_videos, subs_data, final_title):
     print("🎞️ Stitching visual, audio, and captions in MoviePy...")
     audio = AudioFileClip(audio_path)
     audio_duration = audio.duration
@@ -407,7 +397,6 @@ def assemble_video(audio_path, valid_videos, srt_path, final_title):
     if num_clips == 0:
         raise ValueError("No valid videos available to assemble.")
         
-    # 🚀 The Hyper-Pacing Engine calculates exact cut frequency (should be ~2.8s)
     clip_duration = audio_duration / num_clips
     print(f"⚡ Hyper-Pacing Engine: Cutting {num_clips} clips to exactly {clip_duration:.2f} seconds each.")
 
@@ -440,17 +429,18 @@ def assemble_video(audio_path, valid_videos, srt_path, final_title):
     if final_visual.duration > audio_duration:
         final_visual = final_visual.subclip(0, audio_duration)
     
-    subs = parse_srt(srt_path)
     text_clips = []
-    for start, end, text in subs:
+    for start, end, text in subs_data:
         if end <= start: continue
         if start > audio_duration: break
         end = min(end, audio_duration)
         
-        txt_clip = TextClip(text, fontsize=85, color='white', font='Impact', 
-                            stroke_color='black', stroke_width=3.5, 
+        # 🚀 Viral Font Aesthetic: Arial-Bold, centered, massive stroke
+        txt_clip = TextClip(text, fontsize=110, color='white', font='Arial-Bold', 
+                            stroke_color='black', stroke_width=5, 
                             size=(950, None), method='caption')
-        txt_clip = txt_clip.set_start(start).set_end(end).set_position(('center', 1150))
+        
+        txt_clip = txt_clip.set_start(start).set_end(end).set_position(('center', 'center'))
         text_clips.append(txt_clip)
         
     final_video = CompositeVideoClip([final_visual] + text_clips)
@@ -489,8 +479,8 @@ def main():
     script = gemini_data['script']
     tags = gemini_data['tags']
     
-    # 3. Voiceover
-    audio_path = generate_voiceover(script)
+    # 3 & 6. Voiceover & Captions (Combined for perfect Forced Alignment sync)
+    audio_path, subs_data = generate_audio_and_captions(script)
     
     # 4. B-Roll Sourcing
     raw_videos = download_b_roll(tags)
@@ -498,11 +488,10 @@ def main():
     # 5. Quality Control
     valid_videos = verify_b_roll(raw_videos, title)
     
-    # 6. Captions & Assembly
-    srt_path = generate_captions(audio_path, script)
-    assemble_video(audio_path, valid_videos, srt_path, title)
+    # 7. Video Assembly
+    assemble_video(audio_path, valid_videos, subs_data, title)
     
-    # 7. Logging & Cleanup
+    # Logging & Cleanup
     save_history(title)
     
     if not DEV_MODE:
