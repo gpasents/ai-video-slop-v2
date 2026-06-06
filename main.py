@@ -36,7 +36,8 @@ ASSETS_DIR = "assets"
 OUTPUT_DIR = "output"
 HISTORY_FILE = "history.json"
 SCRIPT_CACHE_FILE = os.path.join(ASSETS_DIR, "script_cache.json")
-TIMESTAMPS_CACHE_FILE = os.path.join(ASSETS_DIR, "timestamps_cache.json")
+# 🚀 CACHE BUSTER: Renamed to v2 so it ignores your old 2-word data and forces a fresh 1-word build
+TIMESTAMPS_CACHE_FILE = os.path.join(ASSETS_DIR, "timestamps_cache_v2.json") 
 
 # ==============================================================================
 # MODEL ROUTING & API KEY CYCLING CONFIGURATION
@@ -250,26 +251,17 @@ def generate_audio_and_captions(script_text):
             words.append((word_start, ends[-1], current_word))
 
         subs = []
-        temp_words = []
-        chunk_start = 0
-
+        
+        # 🚀 ONE-WORD ENGINE: Append every single word instantly for hyper-retention pacing
         for w_start, w_end, word in words:
-            if len(temp_words) == 0:
-                chunk_start = w_start
-            
-            temp_words.append(word)
-
-            if len(temp_words) >= 2 or word[-1] in ".!?":
-                subs.append([chunk_start, w_end, " ".join(temp_words)])
-                temp_words = []
-                
-        if temp_words:
-            subs.append([chunk_start, words[-1][1], " ".join(temp_words)])
+            clean_word = word.strip()
+            if clean_word:
+                subs.append([w_start, w_end, clean_word])
 
         with open(TIMESTAMPS_CACHE_FILE, "w", encoding="utf-8") as f:
             json.dump(subs, f, indent=4)
 
-        print("✅ Audio and mathematically perfect captions generated.")
+        print("✅ Audio and mathematically perfect 1-word captions generated.")
         return audio_path, subs
 
     raise Exception("❌ CRITICAL: All ElevenLabs keys are exhausted.")
@@ -483,17 +475,22 @@ def assemble_video(audio_path, valid_videos, subs_data, final_title):
         
         raw_text = text.upper()
         font_choice = 'Arial-Black'
-        font_size = 130
+        
+        # 🚀 25% FONT SIZE REDUCTION: Down from 130 to 98
+        font_size = 98
+        
+        # 🚀 PROPORTIONAL STROKE REDUCTION: Down from 20 to 15 to maintain the clean aesthetic
+        stroke_thickness = 15 
+        
         tight_kerning = -5
         
-        # 🚀 MATHEMATICAL CENTERING FIX
         # Create the three text layers separately
         txt_shadow = TextClip(raw_text, fontsize=font_size, color='black', font=font_choice, 
-                          stroke_color='black', stroke_width=20, kerning=tight_kerning,
+                          stroke_color='black', stroke_width=stroke_thickness, kerning=tight_kerning,
                           method='caption', size=(850, None), align='center')
                           
         txt_stroke = TextClip(raw_text, fontsize=font_size, color='black', font=font_choice, 
-                          stroke_color='black', stroke_width=20, kerning=tight_kerning,
+                          stroke_color='black', stroke_width=stroke_thickness, kerning=tight_kerning,
                           method='caption', size=(850, None), align='center')
 
         txt_fill = TextClip(raw_text, fontsize=font_size, color='#FFFF00', font=font_choice, 
