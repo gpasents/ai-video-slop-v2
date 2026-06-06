@@ -1,0 +1,26 @@
+# ==============================================================================
+# VIDEO SLOP V2 - GITIGNORE
+# ==============================================================================
+
+# 🛑 SECURITY: NEVER UPLOAD API KEYS
+.env
+
+# 🎬 PIPELINE ASSETS (HEAVY & TEMPORARY)
+# We ignore these so we don't upload gigabytes of stock footage to GitHub
+assets/
+output/
+
+# 🧠 STATE / MEMORY
+# Keeps your local generated history separate from the public repo
+history.json
+
+# 🐍 PYTHON JUNK & VIRTUAL ENVIRONMENTS
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+
+# 💻 IDE / VS CODE SETTINGS
+.vscode/
