@@ -445,7 +445,6 @@ def assemble_video(audio_path, valid_videos, subs_data, final_title):
     for vid in valid_videos:
         clip = VideoFileClip(vid)
         
-        # 🛡️ Bulletproof Dynamic Aspect Ratio Fix
         clip_ratio = clip.w / clip.h
         if clip_ratio > target_ratio:
             clip = clip.resize(height=target_h)
@@ -482,40 +481,52 @@ def assemble_video(audio_path, valid_videos, subs_data, final_title):
         if start > audio_duration: break
         end = min(end, audio_duration)
         
-        # 🚀 THE 3D CAPCUT COMPOSITE UPGRADE
-        # We must build a container for each word to perfectly stack the shadow, stroke, and fill
-        
         raw_text = text.upper()
         font_choice = 'Arial-Black'
         font_size = 130
         tight_kerning = -5
-        box_width = 850
         
-        # Layer 1: The Hard Drop Shadow (100% opacity, thick, shifted 8px Down & Right)
+        # 🚀 MATHEMATICAL CENTERING FIX
+        # Create the three text layers separately
         txt_shadow = TextClip(raw_text, fontsize=font_size, color='black', font=font_choice, 
                           stroke_color='black', stroke_width=20, kerning=tight_kerning,
-                          size=(box_width, None), method='caption')
-        txt_shadow = txt_shadow.set_position((8, 8))
-        
-        # Layer 2: The Outline Stroke (Thick black outline to stop inward bleeding)
+                          method='caption', size=(850, None), align='center')
+                          
         txt_stroke = TextClip(raw_text, fontsize=font_size, color='black', font=font_choice, 
                           stroke_color='black', stroke_width=20, kerning=tight_kerning,
-                          size=(box_width, None), method='caption')
-        txt_stroke = txt_stroke.set_position((0, 0))
+                          method='caption', size=(850, None), align='center')
 
-        # Layer 3: The Solid Yellow Fill (#FFFF00, zero stroke)
         txt_fill = TextClip(raw_text, fontsize=font_size, color='#FFFF00', font=font_choice, 
                           stroke_width=0, kerning=tight_kerning,
-                          size=(box_width, None), method='caption')
-        txt_fill = txt_fill.set_position((0, 0))
+                          method='caption', size=(850, None), align='center')
         
-        # Group them in a perfectly sized mini-container to maintain the 3D physics
+        # Calculate a generously sized bounding box to hold all offset layers
+        box_w = max(txt_shadow.w, txt_stroke.w, txt_fill.w) + 40
+        box_h = max(txt_shadow.h, txt_stroke.h, txt_fill.h) + 40
+
+        # Mathematically pinpoint the exact center for the stroke and the fill
+        center_x = (box_w - txt_stroke.w) / 2
+        center_y = (box_h - txt_stroke.h) / 2
+        
+        fill_x = (box_w - txt_fill.w) / 2
+        fill_y = (box_h - txt_fill.h) / 2
+
+        # Offset the shadow by precisely 8 pixels down and right from the center
+        shadow_x = center_x + 8
+        shadow_y = center_y + 8
+
+        # Lock the layers into their exact pixel coordinates
+        txt_shadow = txt_shadow.set_position((shadow_x, shadow_y))
+        txt_stroke = txt_stroke.set_position((center_x, center_y))
+        txt_fill = txt_fill.set_position((fill_x, fill_y))
+        
+        # Group them in the composite container
         word_clip = CompositeVideoClip(
             [txt_shadow, txt_stroke, txt_fill], 
-            size=(txt_stroke.w + 16, txt_stroke.h + 16)
+            size=(box_w, box_h)
         )
         
-        # Apply the snappy bounce animation to the entire 3D grouping simultaneously
+        # Apply the snappy bounce animation to the entire mathematically aligned group
         word_clip = word_clip.resize(snappy_pop)
         
         # Center the animated 3D word block directly in the middle of the main 9:16 video
