@@ -5,6 +5,7 @@ import uuid
 import requests
 import cv2
 import base64
+import re
 from dotenv import load_dotenv
 
 # Using the brand new, officially supported Google GenAI SDK
@@ -12,8 +13,9 @@ from google import genai
 from google.genai import types
 from google.genai.errors import APIError
 
-from moviepy.editor import VideoFileClip, AudioFileClip, TextClip, CompositeVideoClip, concatenate_videoclips
+from moviepy.editor import VideoFileClip, AudioFileClip, TextClip, CompositeVideoClip, concatenate_videoclips, CompositeAudioClip
 import moviepy.video.fx.all as vfx
+import moviepy.audio.fx.all as afx
 
 # ==============================================================================
 # CONFIGURATION & ENVIRONMENT SETUP
@@ -21,6 +23,11 @@ import moviepy.video.fx.all as vfx
 
 # 🛑 DEVELOPMENT MODE TOGGLE 🛑
 DEV_MODE = True
+
+# ⚡ RENDER SPEED TOGGLE ("test" or "production") ⚡
+# "test": 540x960 @ 30 FPS (Renders 3-4x faster for rapid testing)
+# "production": 1080x1920 @ 60 FPS (Viral quality)
+RENDER_QUALITY = "test"
 
 # Load environment variables from the local .env file
 load_dotenv()
@@ -31,12 +38,14 @@ load_dotenv()
 from moviepy.config import change_settings
 change_settings({"IMAGEMAGICK_BINARY": r"C:\Program Files\ImageMagick-7.1.2-Q16-HDRI\magick.exe"})
 
-ELEVENLABS_VOICE_ID = "pNInz6obpgDQGcFmaJgB" # Adam - great for mysterious storytelling
+# 🚀 TARGET VOICE: Liam - dynamic, viral influencer pacing
+ELEVENLABS_VOICE_ID = "TX3LPaxmHKxFdv7VOQHJ" 
 ASSETS_DIR = "assets"
 OUTPUT_DIR = "output"
 HISTORY_FILE = "history.json"
 SCRIPT_CACHE_FILE = os.path.join(ASSETS_DIR, "script_cache.json")
-TIMESTAMPS_CACHE_FILE = os.path.join(ASSETS_DIR, "timestamps_cache_v2.json") 
+TIMESTAMPS_CACHE_FILE = os.path.join(ASSETS_DIR, "timestamps_cache.json") 
+LOCAL_BG_MUSIC_FILE = os.path.join(ASSETS_DIR, "bg_music.mp3")
 
 # ==============================================================================
 # MODEL ROUTING & API KEY CYCLING CONFIGURATION
@@ -97,7 +106,6 @@ def generate_with_fallback(contents, model_queue, config=None):
                     print(f"   ❌ Fatal API Error on [{model_name}]: {e}")
                     raise e
                     
-        # If the inner loop finishes, it means ALL models failed for THIS specific key
         print(f"   ⚠️ All models exhausted for Gemini Key #{current_gemini_idx + 1}. Switching to next API Key...")
         current_gemini_idx += 1
         
@@ -143,15 +151,21 @@ def generate_topic_script_tags(history):
     You are a viral YouTube Shorts producer. Create a 45-second script similar to the 'Starbucks glitch' story: fast-paced, mysterious, 'did you know?' style storytelling.
     Do NOT use any of these past topics: {json.dumps(history)}
     
+    CRITICAL SCRIPT FORMATTING RULE (FOR AI VOICE PACING):
+    You MUST format the "script" text to sound natural but keep it clean:
+    1. Use simple punctuation like commas (,) and periods (.) strategically to force micro-pauses and natural breathing.
+    2. Do NOT use em-dashes (—) or quotation marks (" "). Keep the punctuation basic.
+    3. Write out dates and numbers using digits (e.g., "2026" or "100" instead of "twenty twenty-six").
+    
     CRITICAL VISUAL B-ROLL RULE:
     The 'tags' array MUST contain exactly 16 simple, 1-2 word NOUNS that match the chronological story beats.
-    Stock footage APIs are dumb. Do NOT use verbs or complex actions (e.g., 'scrolling phone', 'officer knocking').
-    Use basic, highly searchable objects/nouns instead (e.g., 'smartphone', 'bank check', 'ATM', 'cash', 'crowd', 'laptop', 'police car').
+    Stock footage APIs are dumb. Do NOT use verbs or complex actions.
+    Use basic, highly searchable objects/nouns instead (e.g., 'smartphone', 'bank check', 'ATM', 'cash', 'crowd', 'laptop').
     
     Output ONLY a JSON object with this exact structure:
     {{
       "title": "A short, catchy, mysterious title",
-      "script": "The complete spoken script. Write it exactly as it should be read by a voiceover artist. No brackets, no stage directions. Around 110-130 words.",
+      "script": "The pacing-optimized spoken script. Around 110-130 words.",
       "tags": ["noun 1", "noun 2", "noun 3", "noun 4", "noun 5", "noun 6", "noun 7", "noun 8", "noun 9", "noun 10", "noun 11", "noun 12", "noun 13", "noun 14", "noun 15", "noun 16"] 
     }}
     """
@@ -188,13 +202,14 @@ def generate_audio_and_captions(script_text):
     print("🎙️ Generating voiceover and extracting native word-level timestamps via ElevenLabs...")
     
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}/with-timestamps"
+    
     data = {
         "text": script_text,
         "model_id": "eleven_multilingual_v2",
         "voice_settings": {
-            "stability": 0.25, 
-            "similarity_boost": 0.85, 
-            "style": 0.50,
+            "stability": 0.30, 
+            "similarity_boost": 0.80, 
+            "style": 0.65,
             "use_speaker_boost": True
         }
     }
@@ -252,14 +267,14 @@ def generate_audio_and_captions(script_text):
         subs = []
         
         for w_start, w_end, word in words:
-            clean_word = word.strip()
+            clean_word = re.sub(r'[,—\-"“”\.]', '', word).strip()
             if clean_word:
                 subs.append([w_start, w_end, clean_word])
 
         with open(TIMESTAMPS_CACHE_FILE, "w", encoding="utf-8") as f:
             json.dump(subs, f, indent=4)
 
-        print("✅ Audio and mathematically perfect 1-word captions generated.")
+        print("✅ Audio and visually-cleansed 1-word captions generated.")
         return audio_path, subs
 
     raise Exception("❌ CRITICAL: All ElevenLabs keys are exhausted.")
@@ -416,7 +431,7 @@ def verify_b_roll(video_paths, topic):
 # STEP 7: VIDEO ASSEMBLY (HYPER-PACING ENGINE)
 # ==============================================================================
 
-def assemble_video(audio_path, valid_videos, subs_data, final_title):
+def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, final_title):
     print("🎞️ Stitching visual, audio, and captions in MoviePy...")
     audio = AudioFileClip(audio_path)
     audio_duration = audio.duration
@@ -428,9 +443,24 @@ def assemble_video(audio_path, valid_videos, subs_data, final_title):
     clip_duration = audio_duration / num_clips
     print(f"⚡ Hyper-Pacing Engine: Cutting {num_clips} clips to exactly {clip_duration:.2f} seconds each.")
 
-    clips = []
-    target_w, target_h = 1080, 1920
+    if RENDER_QUALITY == "test":
+        target_w, target_h = 540, 960
+        render_fps = 30
+        font_size = 50
+        stroke_thickness = 7
+        box_width = 450
+        offset_shadow = 4
+        print("⚠️ WARNING: Test Mode ON. Rendering at 540x960 30FPS for maximum speed.")
+    else:
+        target_w, target_h = 1080, 1920
+        render_fps = 60
+        font_size = 98
+        stroke_thickness = 15
+        box_width = 850
+        offset_shadow = 8
+
     target_ratio = target_w / target_h
+    clips = []
 
     for vid in valid_videos:
         clip = VideoFileClip(vid)
@@ -452,19 +482,31 @@ def assemble_video(audio_path, valid_videos, subs_data, final_title):
         
     final_visual = concatenate_videoclips(clips, method="compose")
     
-    final_visual = final_visual.set_audio(audio)
+    # 🚀 AUDIO MIXER: Layer Voiceover and Local Background Music
+    if bg_music_path and os.path.exists(bg_music_path):
+        print("🎧 Mixing voiceover with local background music (ducked to 8% volume)...")
+        bg_clip = AudioFileClip(bg_music_path).fx(afx.volumex, 0.08)
+        bg_clip = afx.audio_loop(bg_clip, duration=audio_duration)
+        final_audio = CompositeAudioClip([audio, bg_clip])
+    else:
+        if bg_music_path:
+            print(f"⚠️ Warning: Local background music not found at {bg_music_path}. Rendering without it.")
+        final_audio = audio
+        
+    final_visual = final_visual.set_audio(final_audio)
     if final_visual.duration > audio_duration:
         final_visual = final_visual.subclip(0, audio_duration)
     
     text_clips = []
     
-    # 🎬 SMOOTH 60FPS KINETIC POP: Stretched to 0.15s to allow for buttery-smooth subframes
     def snappy_pop(t):
         if t < 0.075:
             return 0.85 + 2.66 * t  
         elif t < 0.15:
             return 1.05 - 0.66 * (t - 0.075) 
         return 1.0
+
+    caption_y_pos = int(target_h * 0.60)
 
     for start, end, text in subs_data:
         if end <= start: continue
@@ -473,24 +515,22 @@ def assemble_video(audio_path, valid_videos, subs_data, final_title):
         
         raw_text = text.upper()
         font_choice = 'Arial-Black'
-        font_size = 98
-        stroke_thickness = 15 
-        tight_kerning = -5
+        tight_kerning = -5 if RENDER_QUALITY != "test" else -2
         
         txt_shadow = TextClip(raw_text, fontsize=font_size, color='black', font=font_choice, 
                           stroke_color='black', stroke_width=stroke_thickness, kerning=tight_kerning,
-                          method='caption', size=(850, None), align='center')
+                          method='caption', size=(box_width, None), align='center')
                           
         txt_stroke = TextClip(raw_text, fontsize=font_size, color='black', font=font_choice, 
                           stroke_color='black', stroke_width=stroke_thickness, kerning=tight_kerning,
-                          method='caption', size=(850, None), align='center')
+                          method='caption', size=(box_width, None), align='center')
 
         txt_fill = TextClip(raw_text, fontsize=font_size, color='#FFFF00', font=font_choice, 
                           stroke_width=0, kerning=tight_kerning,
-                          method='caption', size=(850, None), align='center')
+                          method='caption', size=(box_width, None), align='center')
         
-        box_w = max(txt_shadow.w, txt_stroke.w, txt_fill.w) + 40
-        box_h = max(txt_shadow.h, txt_stroke.h, txt_fill.h) + 40
+        box_w = max(txt_shadow.w, txt_stroke.w, txt_fill.w) + (20 if RENDER_QUALITY == "test" else 40)
+        box_h = max(txt_shadow.h, txt_stroke.h, txt_fill.h) + (20 if RENDER_QUALITY == "test" else 40)
 
         center_x = (box_w - txt_stroke.w) / 2
         center_y = (box_h - txt_stroke.h) / 2
@@ -498,8 +538,8 @@ def assemble_video(audio_path, valid_videos, subs_data, final_title):
         fill_x = (box_w - txt_fill.w) / 2
         fill_y = (box_h - txt_fill.h) / 2
 
-        shadow_x = center_x + 8
-        shadow_y = center_y + 8
+        shadow_x = center_x + offset_shadow
+        shadow_y = center_y + offset_shadow
 
         txt_shadow = txt_shadow.set_position((shadow_x, shadow_y))
         txt_stroke = txt_stroke.set_position((center_x, center_y))
@@ -511,8 +551,7 @@ def assemble_video(audio_path, valid_videos, subs_data, final_title):
         )
         
         word_clip = word_clip.resize(snappy_pop)
-        
-        word_clip = word_clip.set_position(('center', 'center')).set_start(start).set_end(end)
+        word_clip = word_clip.set_position(('center', caption_y_pos)).set_start(start).set_end(end)
         
         text_clips.append(word_clip)
         
@@ -521,11 +560,10 @@ def assemble_video(audio_path, valid_videos, subs_data, final_title):
     safe_title = "".join([c for c in final_title if c.isalpha() or c.isdigit() or c==' ']).rstrip()
     output_path = os.path.join(OUTPUT_DIR, f"{safe_title.replace(' ', '_')}.mp4")
     
-    # 🚀 60 FPS RENDER: Doubles the framerate to eliminate lag and smooth out the bounce animation
-    print(f"🚀 Rendering final video to: {output_path} at 60 FPS")
+    print(f"🚀 Rendering final video to: {output_path} at {render_fps} FPS")
     final_video.write_videofile(
         output_path, 
-        fps=60, 
+        fps=render_fps, 
         codec="libx264", 
         audio_codec="aac", 
         preset="ultrafast", 
@@ -556,6 +594,9 @@ def main():
     # 3 & 6. Voiceover & Captions (Combined for perfect Forced Alignment sync)
     audio_path, subs_data = generate_audio_and_captions(script)
     
+    # 3.5. Background Music Sourcing (Local File)
+    bg_music_path = LOCAL_BG_MUSIC_FILE if os.path.exists(LOCAL_BG_MUSIC_FILE) else None
+    
     # 4. B-Roll Sourcing
     raw_videos = download_b_roll(tags)
     
@@ -563,14 +604,17 @@ def main():
     valid_videos = verify_b_roll(raw_videos, title)
     
     # 7. Video Assembly
-    assemble_video(audio_path, valid_videos, subs_data, title)
+    assemble_video(audio_path, bg_music_path, valid_videos, subs_data, title)
     
     # Logging & Cleanup
     save_history(title)
     
     if not DEV_MODE:
         for file in os.listdir(ASSETS_DIR):
-            os.remove(os.path.join(ASSETS_DIR, file))
+            file_path = os.path.join(ASSETS_DIR, file)
+            # 🚀 SAFETY FIX: Do not delete the master background track during cleanup
+            if file != "bg_music.mp3":
+                os.remove(file_path)
         print("🧹 Cleaned up temporary assets.")
     else:
         print("🛑 DEV MODE: Assets left in folder for next run.")
