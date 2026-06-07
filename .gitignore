@@ -7,8 +7,9 @@
 
 # 🎬 PIPELINE ASSETS (HEAVY & TEMPORARY)
 # We ignore these so we don't upload gigabytes of stock footage to GitHub
-assets/
-output/
+assets*/
+output*/
+profiles/
 
 # 🧠 STATE / MEMORY
 # Keeps your local generated history separate from the public repo
