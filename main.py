@@ -36,7 +36,6 @@ ASSETS_DIR = "assets"
 OUTPUT_DIR = "output"
 HISTORY_FILE = "history.json"
 SCRIPT_CACHE_FILE = os.path.join(ASSETS_DIR, "script_cache.json")
-# 🚀 CACHE BUSTER: Renamed to v2 so it ignores your old 2-word data and forces a fresh 1-word build
 TIMESTAMPS_CACHE_FILE = os.path.join(ASSETS_DIR, "timestamps_cache_v2.json") 
 
 # ==============================================================================
@@ -252,7 +251,6 @@ def generate_audio_and_captions(script_text):
 
         subs = []
         
-        # 🚀 ONE-WORD ENGINE: Append every single word instantly for hyper-retention pacing
         for w_start, w_end, word in words:
             clean_word = word.strip()
             if clean_word:
@@ -460,12 +458,12 @@ def assemble_video(audio_path, valid_videos, subs_data, final_title):
     
     text_clips = []
     
-    # 🎬 SUBTLE KINETIC POP: Scales from 85% to 105% in 0.05s, settles to 100% by 0.1s
+    # 🎬 SMOOTH 60FPS KINETIC POP: Stretched to 0.15s to allow for buttery-smooth subframes
     def snappy_pop(t):
-        if t < 0.05:
-            return 0.85 + 4.0 * t  
-        elif t < 0.1:
-            return 1.05 - 1.0 * (t - 0.05) 
+        if t < 0.075:
+            return 0.85 + 2.66 * t  
+        elif t < 0.15:
+            return 1.05 - 0.66 * (t - 0.075) 
         return 1.0
 
     for start, end, text in subs_data:
@@ -475,16 +473,10 @@ def assemble_video(audio_path, valid_videos, subs_data, final_title):
         
         raw_text = text.upper()
         font_choice = 'Arial-Black'
-        
-        # 🚀 25% FONT SIZE REDUCTION: Down from 130 to 98
         font_size = 98
-        
-        # 🚀 PROPORTIONAL STROKE REDUCTION: Down from 20 to 15 to maintain the clean aesthetic
         stroke_thickness = 15 
-        
         tight_kerning = -5
         
-        # Create the three text layers separately
         txt_shadow = TextClip(raw_text, fontsize=font_size, color='black', font=font_choice, 
                           stroke_color='black', stroke_width=stroke_thickness, kerning=tight_kerning,
                           method='caption', size=(850, None), align='center')
@@ -497,36 +489,29 @@ def assemble_video(audio_path, valid_videos, subs_data, final_title):
                           stroke_width=0, kerning=tight_kerning,
                           method='caption', size=(850, None), align='center')
         
-        # Calculate a generously sized bounding box to hold all offset layers
         box_w = max(txt_shadow.w, txt_stroke.w, txt_fill.w) + 40
         box_h = max(txt_shadow.h, txt_stroke.h, txt_fill.h) + 40
 
-        # Mathematically pinpoint the exact center for the stroke and the fill
         center_x = (box_w - txt_stroke.w) / 2
         center_y = (box_h - txt_stroke.h) / 2
         
         fill_x = (box_w - txt_fill.w) / 2
         fill_y = (box_h - txt_fill.h) / 2
 
-        # Offset the shadow by precisely 8 pixels down and right from the center
         shadow_x = center_x + 8
         shadow_y = center_y + 8
 
-        # Lock the layers into their exact pixel coordinates
         txt_shadow = txt_shadow.set_position((shadow_x, shadow_y))
         txt_stroke = txt_stroke.set_position((center_x, center_y))
         txt_fill = txt_fill.set_position((fill_x, fill_y))
         
-        # Group them in the composite container
         word_clip = CompositeVideoClip(
             [txt_shadow, txt_stroke, txt_fill], 
             size=(box_w, box_h)
         )
         
-        # Apply the snappy bounce animation to the entire mathematically aligned group
         word_clip = word_clip.resize(snappy_pop)
         
-        # Center the animated 3D word block directly in the middle of the main 9:16 video
         word_clip = word_clip.set_position(('center', 'center')).set_start(start).set_end(end)
         
         text_clips.append(word_clip)
@@ -536,10 +521,11 @@ def assemble_video(audio_path, valid_videos, subs_data, final_title):
     safe_title = "".join([c for c in final_title if c.isalpha() or c.isdigit() or c==' ']).rstrip()
     output_path = os.path.join(OUTPUT_DIR, f"{safe_title.replace(' ', '_')}.mp4")
     
-    print(f"🚀 Rendering final video to: {output_path}")
+    # 🚀 60 FPS RENDER: Doubles the framerate to eliminate lag and smooth out the bounce animation
+    print(f"🚀 Rendering final video to: {output_path} at 60 FPS")
     final_video.write_videofile(
         output_path, 
-        fps=30, 
+        fps=60, 
         codec="libx264", 
         audio_codec="aac", 
         preset="ultrafast", 
