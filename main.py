@@ -22,7 +22,7 @@ import moviepy.audio.fx.all as afx
 # ==============================================================================
 
 # 🛑 DEVELOPMENT MODE TOGGLE 🛑
-DEV_MODE = False
+DEV_MODE = True
 
 # ⚡ RENDER SPEED TOGGLE ("test" or "production") ⚡
 RENDER_QUALITY = "test"
@@ -43,7 +43,7 @@ ROUTING_LOGIC = {
     "heavy_reasoning": ["gemini-1.5-pro","gemini-3.5-flash","gemini-2.5-flash","gemini-3.1-flash-lite", "gemini-2.0-flash", "gemini-1.5-flash"]
 }
 
-# 🚀 Load keys as lists. Use commas in your .env file
+# Load keys as lists. Use commas in your .env file
 GEMINI_KEYS = [k.strip() for k in os.environ.get("GEMINI_API_KEYS", os.environ.get("GEMINI_API_KEY", "")).split(",") if k.strip()]
 ELEVEN_KEYS = [k.strip() for k in os.environ.get("ELEVENLABS_API_KEYS", os.environ.get("ELEVENLABS_API_KEY", "")).split(",") if k.strip()]
 PEXELS_KEYS = [k.strip() for k in os.environ.get("PEXELS_API_KEYS", os.environ.get("PEXELS_API_KEY", "")).split(",") if k.strip()]
@@ -57,7 +57,7 @@ current_eleven_idx = 0
 current_pexels_idx = 0
 
 # ==============================================================================
-# PROFILE MANAGEMENT (THE NEW SCALABLE ARCHITECTURE)
+# PROFILE MANAGEMENT (PRODUCTION VIRAL METADATA)
 # ==============================================================================
 
 def load_or_create_profile(profile_name):
@@ -77,25 +77,51 @@ def load_or_create_profile(profile_name):
         "voice_style": 0.65,
         "bg_music_file": "bg_music.mp3",
         "system_prompt": """
-You are a viral YouTube Shorts producer. Create a 45-second script similar to the 'Starbucks glitch' story: fast-paced, mysterious, 'did you know?' style storytelling.
+You are a viral YouTube Shorts, TikTok, and Instagram Reels producer specializing in high-retention storytelling. 
+Create a unique 45-second script based on shocking urban anomalies, financial system glitches, or bizarre real-world modern mysteries.
+
 Do NOT use any of these past topics: {history}
 
 CRITICAL SCRIPT FORMATTING RULE (FOR AI VOICE PACING):
 You MUST format the "script" text to sound natural but keep it clean:
 1. Use simple punctuation like commas (,) and periods (.) strategically to force micro-pauses and natural breathing.
 2. Do NOT use em-dashes (—) or quotation marks (" "). Keep the punctuation basic.
-3. Write out dates and numbers using digits (e.g., "2026" or "100" instead of "twenty twenty-six").
+3. Write out dates and numbers using digits (e.g., "2026" or "100").
 
 CRITICAL VISUAL B-ROLL RULE:
-The 'tags' array MUST contain exactly 16 simple, 1-2 word NOUNS that match the chronological story beats.
-Stock footage APIs are dumb. Do NOT use verbs or complex actions.
-Use basic, highly searchable objects/nouns instead (e.g., 'smartphone', 'bank check', 'ATM', 'cash', 'crowd', 'laptop').
+The 'tags' array MUST contain exactly 16 simple, 1-2 word NOUNS that match the chronological story beats for Pexels. Use generic searchable nouns.
+
+🚀 CRITICAL VIRAL SOCIAL METADATA ENGINE:
+You must also generate hyper-optimized viral metadata customized for platform APIs. 
+Fill in the text fields dynamically based on the story, but KEEP the boolean/integer fields exactly as they appear in the structure below.
 
 Output ONLY a JSON object with this exact structure:
 {
-  "title": "A short, catchy, mysterious title",
+  "title": "Internal working title",
   "script": "The pacing-optimized spoken script. Around 110-130 words.",
-  "tags": ["noun 1", "noun 2", "noun 3", "noun 4", "noun 5", "noun 6", "noun 7", "noun 8", "noun 9", "noun 10", "noun 11", "noun 12", "noun 13", "noun 14", "noun 15", "noun 16"] 
+  "tags": ["noun 1", "noun 2", "noun 3", "noun 4", "noun 5", "noun 6", "noun 7", "noun 8", "noun 9", "noun 10", "noun 11", "noun 12", "noun 13", "noun 14", "noun 15", "noun 16"],
+  "metadata": {
+    "youtube_shorts": {
+      "title": "Curiosity-gap hook under 60 chars",
+      "description": "Engaging 2-sentence breakdown ending with trending shorts tags.",
+      "tags": ["urbanlegends", "mysteries", "shorts", "finance"],
+      "made_for_kids": false,
+      "category_id": "24"
+    },
+    "tiktok": {
+      "caption": "High-converting retention question + niche tags like #fyp #mystery",
+      "disable_comment": false,
+      "disable_duet": false,
+      "disable_stitch": false,
+      "video_cover_timestamp_ms": 1500,
+      "brand_content_toggle": false
+    },
+    "instagram_reels": {
+      "caption": "High-value storytelling layout ending with 'Follow for more daily mysteries.' #reelsviral #mysterychannel",
+      "share_to_feed": true,
+      "cover_image_timestamp_ms": 1500
+    }
+  }
 }
 """
     }
@@ -151,7 +177,7 @@ def generate_topic_script_tags(profile, history, script_cache_file, is_batching)
         with open(script_cache_file, "r", encoding="utf-8") as f:
             return json.load(f)
 
-    print("🧠 Brainstorming unique script...")
+    print("🧠 Brainstorming unique script and generating viral properties...")
     prompt = profile["system_prompt"].replace("{history}", json.dumps(history))
     
     response = generate_with_fallback(
@@ -287,37 +313,26 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, final_tit
     else:
         target_w, target_h, render_fps, font_size, stroke_thickness, box_width, offset_shadow = 1080, 1920, 60, 98, 15, 850, 8
 
-    target_ratio = target_w / target_h
     clips = []
     
     for vid in valid_videos:
-        clip = VideoFileClip(vid)
-        
-        # 🚀 ANTI-DROP FIX: Strip rogue audio tracks and normalize framerate to prevent timeline panic
-        clip = clip.without_audio()
-        clip = clip.set_fps(render_fps)
-        
-        # 🚀 ASPECT RATIO FIX: Strict exact-center cropping math
+        clip = VideoFileClip(vid).without_audio().set_fps(render_fps)
         w, h = clip.size
-        clip_ratio = w / float(h)
         
-        if abs(clip_ratio - target_ratio) < 0.01:
-            clip = clip.resize((target_w, target_h))
-        elif clip_ratio > target_ratio:
-            # Video is too wide (e.g., horizontal). Lock height, crop width.
-            clip = clip.resize(height=target_h)
-            clip = clip.crop(x_center=clip.size[0]/2.0, y_center=clip.size[1]/2.0, width=target_w, height=target_h)
-        else:
-            # Video is too tall. Lock width, crop height.
-            clip = clip.resize(width=target_w)
-            clip = clip.crop(x_center=clip.size[0]/2.0, y_center=clip.size[1]/2.0, width=target_w, height=target_h)
+        # 🚀 ANTI-BLACK-BAR FIX: Calculate the scaling factor needed to fill both dimensions
+        scale_w = target_w / float(w)
+        scale_h = target_h / float(h)
+        scale_factor = max(scale_w, scale_h) # Always scale by the larger requirement to guarantee full coverage
+        
+        # Resize the clip using the master scale factor
+        clip = clip.resize(scale_factor)
+        
+        # Now that the clip is guaranteed to be equal to or larger than the target on both axes, crop the exact center
+        clip = clip.crop(x_center=clip.w/2.0, y_center=clip.h/2.0, width=target_w, height=target_h)
             
-        # 🚀 SAFE TRIMMING FIX: Check duration BEFORE subclip to prevent black/frozen frames
         if clip.duration < clip_duration:
-            # If the video is naturally too short, loop it to fill the time block
             clip = clip.fx(vfx.loop, duration=clip_duration)
         else:
-            # If it's long enough, apply the 2-second safety offset and trim
             start_time = 2.0 if clip.duration >= (clip_duration + 2.0) else 0.0
             clip = clip.subclip(start_time, start_time + clip_duration)
             
@@ -366,20 +381,19 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, final_tit
         
     final_video = CompositeVideoClip([final_visual] + text_clips)
     safe_title = "".join([c for c in final_title if c.isalpha() or c.isdigit() or c==' ']).rstrip()
-    output_path = os.path.join(output_dir, f"{safe_title.replace(' ', '_')}.mp4")
+    base_filename = safe_title.replace(' ', '_')
+    output_path = os.path.join(output_dir, f"{base_filename}.mp4")
     
     final_video.write_videofile(output_path, fps=render_fps, codec="libx264", audio_codec="aac", preset="ultrafast", threads=4, logger='bar')
     
     final_video.close()
     final_visual.close()
     audio.close()
-    if bg_clip:
-        bg_clip.close()
-    for clip in clips:
-        clip.close()
+    if bg_clip: bg_clip.close()
+    for clip in clips: clip.close()
 
     print("🎉 Render complete and resources released.")
-    return output_path
+    return output_path, base_filename
 
 # ==============================================================================
 # SURGICAL CLEANUP
@@ -390,10 +404,8 @@ def cleanup_workspace(assets_dir, bg_music_filename):
     for file in os.listdir(assets_dir):
         if file.endswith(".mp4") or file.endswith(".jpg") or file == "voiceover.mp3" or "cache" in file:
             if file != bg_music_filename:
-                try:
-                    os.remove(os.path.join(assets_dir, file))
-                except Exception as e:
-                    print(f"⚠️ Could not delete {file}: {e}")
+                try: os.remove(os.path.join(assets_dir, file))
+                except Exception: pass
 
 # ==============================================================================
 # MAIN BATCH PIPELINE
@@ -410,14 +422,14 @@ def main():
     profile = load_or_create_profile(args.profile)
     
     assets_dir = f"assets_{args.profile}"
-    output_dir = f"output_{args.profile}"
+    base_output_dir = f"output_{args.profile}"
     history_file = os.path.join(assets_dir, "history.json")
     script_cache = os.path.join(assets_dir, "script_cache.json")
     timestamps_cache = os.path.join(assets_dir, "timestamps_cache.json")
     local_bg_music = os.path.join(assets_dir, profile["bg_music_file"])
     
     os.makedirs(assets_dir, exist_ok=True)
-    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(base_output_dir, exist_ok=True)
 
     # LOOP BATCH ENGINE
     for i in range(args.count):
@@ -426,28 +438,38 @@ def main():
         print(f"=======================================================")
         
         is_batching = args.count > 1 
-
         history = load_history(history_file)
         
         gemini_data = generate_topic_script_tags(profile, history, script_cache, is_batching)
         title = gemini_data['title']
+        
+        safe_title = "".join([c for c in title if c.isalpha() or c.isdigit() or c==' ']).rstrip()
+        base_filename = safe_title.replace(' ', '_')
+        video_out_dir = os.path.join(base_output_dir, base_filename)
+        os.makedirs(video_out_dir, exist_ok=True)
         
         audio_path, subs_data = generate_audio_and_captions(
             gemini_data['script'], profile, os.path.join(assets_dir, "voiceover.mp3"), timestamps_cache, is_batching
         )
         
         bg_music_path = local_bg_music if os.path.exists(local_bg_music) else None
-        
         valid_videos = download_b_roll(gemini_data['tags'], assets_dir, is_batching)
         
-        assemble_video(audio_path, bg_music_path, valid_videos, subs_data, title, output_dir)
+        _, returned_base_filename = assemble_video(audio_path, bg_music_path, valid_videos, subs_data, title, video_out_dir)
+        
+        # 🚀 WRITE COMPANION METADATA JSON ARTIFACT
+        if 'metadata' in gemini_data:
+            metadata_output_path = os.path.join(video_out_dir, f"{returned_base_filename}.json")
+            with open(metadata_output_path, "w", encoding="utf-8") as meta_f:
+                json.dump(gemini_data['metadata'], meta_f, indent=4)
+            print(f"📦 Paired viral properties saved to: {metadata_output_path}")
         
         save_history(history_file, title)
         
         if i < args.count - 1 or not DEV_MODE:
             cleanup_workspace(assets_dir, profile["bg_music_file"])
 
-    print(f"\n🎉 BATCH COMPLETE! Generated {args.count} videos in '{output_dir}'.")
+    print(f"\n🎉 BATCH COMPLETE! Generated {args.count} videos and metadata packets in '{base_output_dir}'.")
 
 if __name__ == "__main__":
     main()

@@ -15,6 +15,7 @@ profiles/
 # Keeps your local generated history separate from the public repo
 history.json
 eleven.txt
+sens.txt
 
 # 🐍 PYTHON JUNK & VIRTUAL ENVIRONMENTS
 __pycache__/
