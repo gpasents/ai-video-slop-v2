@@ -22,8 +22,7 @@ import moviepy.audio.fx.all as afx
 # ==============================================================================
 
 # 🛑 DEVELOPMENT MODE TOGGLE 🛑
-# (Note: In batch generation, DEV_MODE will bypass caches to ensure unique videos)
-DEV_MODE = True
+DEV_MODE = False
 
 # ⚡ RENDER SPEED TOGGLE ("test" or "production") ⚡
 RENDER_QUALITY = "test"
@@ -53,7 +52,6 @@ if not GEMINI_KEYS or not ELEVEN_KEYS or not PEXELS_KEYS:
     print("❌ API Key Error: Missing one or more API key lists. Please check your .env file.")
     exit(1)
 
-# Global trackers for key rotation
 current_gemini_idx = 0
 current_eleven_idx = 0
 current_pexels_idx = 0
@@ -221,7 +219,7 @@ def generate_audio_and_captions(script_text, profile, audio_path, timestamps_cac
 
         subs = []
         for w_start, w_end, word in words:
-            clean_word = re.sub(r'[,—\-"精度“”\.]', '', word).strip()
+            clean_word = re.sub(r'[,—\-"“”\.]', '', word).strip()
             if clean_word: subs.append([w_start, w_end, clean_word])
 
         with open(timestamps_cache_file, "w", encoding="utf-8") as f:
@@ -263,7 +261,7 @@ def download_b_roll(tags, assets_dir, is_batching):
             try:
                 data = get_pexels_data(url)
                 for video in data.get('videos', []):
-                    if video.get('duration', 0) < 3: continue
+                    if video.get('duration', 0) < 5: continue 
                     files = video.get('video_files', [])
                     hd_files = [v for v in files if v.get('quality') == 'hd' and v.get('width', 0) >= 720]
                     best_file = hd_files[0] if hd_files else files[0]
@@ -289,14 +287,40 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, final_tit
     else:
         target_w, target_h, render_fps, font_size, stroke_thickness, box_width, offset_shadow = 1080, 1920, 60, 98, 15, 850, 8
 
+    target_ratio = target_w / target_h
     clips = []
+    
     for vid in valid_videos:
         clip = VideoFileClip(vid)
-        if clip.w / clip.h > target_w / target_h:
-            clip = clip.resize(height=target_h).crop(x_center=clip.w/2, width=target_w)
+        
+        # 🚀 ANTI-DROP FIX: Strip rogue audio tracks and normalize framerate to prevent timeline panic
+        clip = clip.without_audio()
+        clip = clip.set_fps(render_fps)
+        
+        # 🚀 ASPECT RATIO FIX: Strict exact-center cropping math
+        w, h = clip.size
+        clip_ratio = w / float(h)
+        
+        if abs(clip_ratio - target_ratio) < 0.01:
+            clip = clip.resize((target_w, target_h))
+        elif clip_ratio > target_ratio:
+            # Video is too wide (e.g., horizontal). Lock height, crop width.
+            clip = clip.resize(height=target_h)
+            clip = clip.crop(x_center=clip.size[0]/2.0, y_center=clip.size[1]/2.0, width=target_w, height=target_h)
         else:
-            clip = clip.resize(width=target_w).crop(y_center=clip.h/2, height=target_h)
-        clip = clip.fx(vfx.loop, duration=clip_duration) if clip.duration < clip_duration else clip.subclip(0, clip_duration)
+            # Video is too tall. Lock width, crop height.
+            clip = clip.resize(width=target_w)
+            clip = clip.crop(x_center=clip.size[0]/2.0, y_center=clip.size[1]/2.0, width=target_w, height=target_h)
+            
+        # 🚀 SAFE TRIMMING FIX: Check duration BEFORE subclip to prevent black/frozen frames
+        if clip.duration < clip_duration:
+            # If the video is naturally too short, loop it to fill the time block
+            clip = clip.fx(vfx.loop, duration=clip_duration)
+        else:
+            # If it's long enough, apply the 2-second safety offset and trim
+            start_time = 2.0 if clip.duration >= (clip_duration + 2.0) else 0.0
+            clip = clip.subclip(start_time, start_time + clip_duration)
+            
         clips.append(clip)
         
     final_visual = concatenate_videoclips(clips, method="compose")
@@ -346,7 +370,6 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, final_tit
     
     final_video.write_videofile(output_path, fps=render_fps, codec="libx264", audio_codec="aac", preset="ultrafast", threads=4, logger='bar')
     
-    # 🚀 WINDOWS FILE LOCK FIX: Forcefully close open tracks to unlock video reader streams
     final_video.close()
     final_visual.close()
     audio.close()

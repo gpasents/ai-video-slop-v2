@@ -14,6 +14,7 @@ profiles/
 # 🧠 STATE / MEMORY
 # Keeps your local generated history separate from the public repo
 history.json
+eleven.txt
 
 # 🐍 PYTHON JUNK & VIRTUAL ENVIRONMENTS
 __pycache__/
