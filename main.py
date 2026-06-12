@@ -97,7 +97,8 @@ You MUST format the "script" text to sound natural but keep it clean:
 3. Write out dates and numbers using digits (e.g., "2026" or "100").
 
 CRITICAL VISUAL B-ROLL RULE:
-The 'tags' array MUST contain exactly 16 simple, 1-2 word NOUNS that match the chronological story beats for Pexels. Use generic searchable nouns.
+The 'tags' array MUST contain exactly 16 highly specific, literal 2-3 word search phrases that match the chronological story beats for Pexels. 
+Do NOT use single ambiguous words. For example: Use "stock market trading" instead of "stock", use "bank vault" instead of "bank", use "police car flashing" instead of "police". Always be literal, visual, and descriptive to ensure the stock video platform returns exactly what you want.
 
 🚀 CRITICAL VIRAL SOCIAL METADATA ENGINE:
 You must also generate hyper-optimized viral metadata customized for platform APIs. 
@@ -107,7 +108,7 @@ Output ONLY a JSON object with this exact structure:
 {
   "title": "Internal working title",
   "script": "The pacing-optimized spoken script. Around 110-130 words.",
-  "tags": ["noun 1", "noun 2", "noun 3", "noun 4", "noun 5", "noun 6", "noun 7", "noun 8", "noun 9", "noun 10", "noun 11", "noun 12", "noun 13", "noun 14", "noun 15", "noun 16"],
+  "tags": ["phrase 1", "phrase 2", "phrase 3", "phrase 4", "phrase 5", "phrase 6", "phrase 7", "phrase 8", "phrase 9", "phrase 10", "phrase 11", "phrase 12", "phrase 13", "phrase 14", "phrase 15", "phrase 16"],
   "metadata": {
     "youtube_shorts": {
       "title": "Curiosity-gap hook under 60 chars",
@@ -280,14 +281,18 @@ def download_b_roll(tags, assets_dir, is_batching):
     existing = [os.path.join(assets_dir, f) for f in os.listdir(assets_dir) if f.startswith("broll_") and f.endswith(".mp4")]
     
     if DEV_MODE and not is_batching and len(existing) >= required:
-        # Sort existing to ensure they stay in the expected chronological order
         return sorted(existing)[:required]
 
     print(f"🎬 Sourcing strictly ONE video per tag slot...")
     downloaded = []
     
     for i, tag in enumerate(tags[:required]):
-        search_queries = [tag, tag.split()[0], "cinematic abstract dark"]
+        # UPDATED: Better fallback strategy that preserves compound words
+        search_queries = [
+            tag, 
+            f"{tag} cinematic", 
+            "abstract mystery background dark"
+        ]
         found = False
         
         # Create a filesystem-safe version of the tag
