@@ -280,7 +280,8 @@ def download_b_roll(tags, assets_dir, is_batching):
     existing = [os.path.join(assets_dir, f) for f in os.listdir(assets_dir) if f.startswith("broll_") and f.endswith(".mp4")]
     
     if DEV_MODE and not is_batching and len(existing) >= required:
-        return existing[:required]
+        # Sort existing to ensure they stay in the expected chronological order
+        return sorted(existing)[:required]
 
     print(f"🎬 Sourcing strictly ONE video per tag slot...")
     downloaded = []
@@ -288,6 +289,11 @@ def download_b_roll(tags, assets_dir, is_batching):
     for i, tag in enumerate(tags[:required]):
         search_queries = [tag, tag.split()[0], "cinematic abstract dark"]
         found = False
+        
+        # Create a filesystem-safe version of the tag
+        safe_tag = "".join([c for c in tag if c.isalnum() or c == ' ']).strip().replace(' ', '_')
+        if not safe_tag:
+            safe_tag = "fallback"
         
         for query in search_queries:
             if found: break 
@@ -301,7 +307,10 @@ def download_b_roll(tags, assets_dir, is_batching):
                     best_file = hd_files[0] if hd_files else files[0]
                     
                     vid_resp = requests.get(best_file['link'])
-                    filename = os.path.join(assets_dir, f"broll_{uuid.uuid4().hex[:6]}.mp4")
+                    
+                    # Inject chronological index and the tag directly into the filename
+                    filename = os.path.join(assets_dir, f"broll_{i:02d}_{safe_tag}_{uuid.uuid4().hex[:4]}.mp4")
+                    
                     with open(filename, 'wb') as f: f.write(vid_resp.content)
                     downloaded.append(filename)
                     found = True
