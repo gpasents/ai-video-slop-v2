@@ -68,14 +68,22 @@ def load_or_create_profile(profile_name):
         with open(profile_path, "r", encoding="utf-8") as f:
             return json.load(f)
             
-    print(f"⚠️ Profile '{profile_name}' not found. Auto-generating default Urban Mysteries profile...")
+    print(f"⚠️ Profile '{profile_name}' not found. Auto-generating expanded Urban Mysteries profile...")
     
     default_profile = {
         "theme_name": "Urban Mysteries",
         "voice_id": "TX3LPaxmHKxFdv7VOQHJ", # Liam
+        "voice_model": "eleven_multilingual_v2",
         "voice_stability": 0.30,
         "voice_style": 0.65,
         "bg_music_file": "bg_music.mp3",
+        "bg_music_volume": 0.08,
+        "visual_settings": {
+            "font_family": "Arial-Black",
+            "font_color": "#FFFF00",
+            "stroke_color": "black",
+            "caption_y_percentage": 0.60
+        },
         "system_prompt": """
 You are a viral YouTube Shorts, TikTok, and Instagram Reels producer specializing in high-retention storytelling. 
 Create a unique 45-second script based on shocking urban anomalies, financial system glitches, or bizarre real-world modern mysteries.
@@ -205,11 +213,11 @@ def generate_audio_and_captions(script_text, profile, audio_path, timestamps_cac
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{profile['voice_id']}/with-timestamps"
     data = {
         "text": script_text,
-        "model_id": "eleven_multilingual_v2",
+        "model_id": profile.get("voice_model", "eleven_multilingual_v2"),
         "voice_settings": {
-            "stability": profile["voice_stability"], 
+            "stability": profile.get("voice_stability", 0.30), 
             "similarity_boost": 0.80, 
-            "style": profile["voice_style"],
+            "style": profile.get("voice_style", 0.65),
             "use_speaker_boost": True
         }
     }
@@ -302,17 +310,24 @@ def download_b_roll(tags, assets_dir, is_batching):
                 pass
     return downloaded
 
-def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, final_title, output_dir):
+def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, final_title, output_dir, profile):
     print("🎞️ Stitching visual, audio, and captions in MoviePy...")
     audio = AudioFileClip(audio_path)
     audio_duration = audio.duration
     clip_duration = audio_duration / len(valid_videos)
 
-    # Note: Removed 'box_width' as it's no longer needed for label method
     if RENDER_QUALITY == "test":
         target_w, target_h, render_fps, font_size, stroke_thickness, offset_shadow = 540, 960, 30, 50, 7, 4
     else:
         target_w, target_h, render_fps, font_size, stroke_thickness, offset_shadow = 1080, 1920, 60, 98, 15, 8
+
+    # Extract dynamic settings from the profile
+    bg_vol = profile.get("bg_music_volume", 0.08)
+    vis_settings = profile.get("visual_settings", {})
+    font_choice = vis_settings.get("font_family", "Arial-Black")
+    font_color = vis_settings.get("font_color", "#FFFF00")
+    stroke_col = vis_settings.get("stroke_color", "black")
+    y_perc = vis_settings.get("caption_y_percentage", 0.60)
 
     clips = []
     
@@ -343,7 +358,7 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, final_tit
     
     bg_clip = None
     if bg_music_path and os.path.exists(bg_music_path):
-        bg_clip = AudioFileClip(bg_music_path).fx(afx.volumex, 0.08)
+        bg_clip = AudioFileClip(bg_music_path).fx(afx.volumex, bg_vol)
         bg_clip = afx.audio_loop(bg_clip, duration=audio_duration)
         final_audio = CompositeAudioClip([audio, bg_clip])
     else:
@@ -357,19 +372,18 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, final_tit
         elif t < 0.15: return 1.05 - 0.66 * (t - 0.075) 
         return 1.0
 
-    caption_y_pos = int(target_h * 0.60)
+    caption_y_pos = int(target_h * y_perc)
 
     for start, end, text in subs_data:
         if end <= start or start > audio_duration: continue
         end = min(end, audio_duration)
         
-        raw_text, font_choice = text.upper(), 'Arial-Black'
+        raw_text = text.upper()
         tight_kerning = -5 if RENDER_QUALITY != "test" else -2
         
-        # Switched to method='label' and removed size limits. ImageMagick won't word-wrap and tear anymore.
-        txt_shadow = TextClip(raw_text, fontsize=font_size, color='black', font=font_choice, stroke_color='black', stroke_width=stroke_thickness, kerning=tight_kerning, method='label', align='center')
-        txt_stroke = TextClip(raw_text, fontsize=font_size, color='black', font=font_choice, stroke_color='black', stroke_width=stroke_thickness, kerning=tight_kerning, method='label', align='center')
-        txt_fill = TextClip(raw_text, fontsize=font_size, color='#FFFF00', font=font_choice, stroke_width=0, kerning=tight_kerning, method='label', align='center')
+        txt_shadow = TextClip(raw_text, fontsize=font_size, color=stroke_col, font=font_choice, stroke_color=stroke_col, stroke_width=stroke_thickness, kerning=tight_kerning, method='label', align='center')
+        txt_stroke = TextClip(raw_text, fontsize=font_size, color=stroke_col, font=font_choice, stroke_color=stroke_col, stroke_width=stroke_thickness, kerning=tight_kerning, method='label', align='center')
+        txt_fill = TextClip(raw_text, fontsize=font_size, color=font_color, font=font_choice, stroke_width=0, kerning=tight_kerning, method='label', align='center')
         
         box_w, box_h = max(txt_shadow.w, txt_stroke.w, txt_fill.w) + 40, max(txt_shadow.h, txt_stroke.h, txt_fill.h) + 40
         cx, cy = (box_w - txt_stroke.w) / 2, (box_h - txt_stroke.h) / 2
@@ -457,7 +471,8 @@ def main():
         bg_music_path = local_bg_music if os.path.exists(local_bg_music) else None
         valid_videos = download_b_roll(gemini_data['tags'], assets_dir, is_batching)
         
-        _, returned_base_filename = assemble_video(audio_path, bg_music_path, valid_videos, subs_data, title, video_out_dir)
+        # 🚀 Pass the entire profile down to assemble_video
+        _, returned_base_filename = assemble_video(audio_path, bg_music_path, valid_videos, subs_data, title, video_out_dir, profile)
         
         # 🚀 WRITE COMPANION METADATA JSON ARTIFACT
         if 'metadata' in gemini_data:
