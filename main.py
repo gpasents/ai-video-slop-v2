@@ -308,10 +308,11 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, final_tit
     audio_duration = audio.duration
     clip_duration = audio_duration / len(valid_videos)
 
+    # Note: Removed 'box_width' as it's no longer needed for label method
     if RENDER_QUALITY == "test":
-        target_w, target_h, render_fps, font_size, stroke_thickness, box_width, offset_shadow = 540, 960, 30, 50, 7, 450, 4
+        target_w, target_h, render_fps, font_size, stroke_thickness, offset_shadow = 540, 960, 30, 50, 7, 4
     else:
-        target_w, target_h, render_fps, font_size, stroke_thickness, box_width, offset_shadow = 1080, 1920, 60, 98, 15, 850, 8
+        target_w, target_h, render_fps, font_size, stroke_thickness, offset_shadow = 1080, 1920, 60, 98, 15, 8
 
     clips = []
     
@@ -365,9 +366,10 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, final_tit
         raw_text, font_choice = text.upper(), 'Arial-Black'
         tight_kerning = -5 if RENDER_QUALITY != "test" else -2
         
-        txt_shadow = TextClip(raw_text, fontsize=font_size, color='black', font=font_choice, stroke_color='black', stroke_width=stroke_thickness, kerning=tight_kerning, method='caption', size=(box_width, None), align='center')
-        txt_stroke = TextClip(raw_text, fontsize=font_size, color='black', font=font_choice, stroke_color='black', stroke_width=stroke_thickness, kerning=tight_kerning, method='caption', size=(box_width, None), align='center')
-        txt_fill = TextClip(raw_text, fontsize=font_size, color='#FFFF00', font=font_choice, stroke_width=0, kerning=tight_kerning, method='caption', size=(box_width, None), align='center')
+        # Switched to method='label' and removed size limits. ImageMagick won't word-wrap and tear anymore.
+        txt_shadow = TextClip(raw_text, fontsize=font_size, color='black', font=font_choice, stroke_color='black', stroke_width=stroke_thickness, kerning=tight_kerning, method='label', align='center')
+        txt_stroke = TextClip(raw_text, fontsize=font_size, color='black', font=font_choice, stroke_color='black', stroke_width=stroke_thickness, kerning=tight_kerning, method='label', align='center')
+        txt_fill = TextClip(raw_text, fontsize=font_size, color='#FFFF00', font=font_choice, stroke_width=0, kerning=tight_kerning, method='label', align='center')
         
         box_w, box_h = max(txt_shadow.w, txt_stroke.w, txt_fill.w) + 40, max(txt_shadow.h, txt_stroke.h, txt_fill.h) + 40
         cx, cy = (box_w - txt_stroke.w) / 2, (box_h - txt_stroke.h) / 2
