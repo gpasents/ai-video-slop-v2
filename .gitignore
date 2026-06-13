@@ -7,7 +7,10 @@
 
 # 🎬 PIPELINE ASSETS (HEAVY & TEMPORARY)
 # We ignore these so we don't upload gigabytes of stock footage to GitHub
-assets*/
+# Note: By targeting the contents (*/*), we can whitelist specific files inside
+assets*/*
+!assets_urban_mysteries/bg_music.mp3
+
 output*/
 
 # 🧠 STATE / MEMORY
