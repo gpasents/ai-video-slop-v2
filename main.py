@@ -22,7 +22,7 @@ import moviepy.audio.fx.all as afx
 # ==============================================================================
 
 # 🛑 DEVELOPMENT MODE TOGGLE 🛑
-DEV_MODE = True
+DEV_MODE = False
 
 # ⚡ RENDER SPEED TOGGLE ("test" or "production") ⚡
 RENDER_QUALITY = "test"
@@ -90,6 +90,15 @@ Create a unique 45-second script based on shocking urban anomalies, financial sy
 
 Do NOT use any of these past topics: {history}
 
+🚨 CRITICAL HOOK RULE:
+DO NOT start the script with "Imagine this", "Did you know", or by stating a year/date. 
+The first 3 seconds MUST immediately state the most shocking, high-stakes, or bizarre action of the story to hook the viewer instantly.
+
+🚨 CRITICAL OUTRO / CTA RULE:
+DO NOT add a traditional, separate outro. Do not say "Thanks for watching." The algorithm penalizes this by tanking retention. 
+Instead, weave a rapid Call-To-Action seamlessly into the final punchline of the script. 
+Example: "...leaving the mystery completely unsolved. Follow for more fascinating stories." 
+
 CRITICAL SCRIPT FORMATTING RULE (FOR AI VOICE PACING):
 You MUST format the "script" text to sound natural but keep it clean:
 1. Use simple punctuation like commas (,) and periods (.) strategically to force micro-pauses and natural breathing.
@@ -98,11 +107,11 @@ You MUST format the "script" text to sound natural but keep it clean:
 
 CRITICAL VISUAL B-ROLL RULE:
 The 'tags' array MUST contain exactly 16 highly specific, literal 2-3 word search phrases that match the chronological story beats for Pexels. 
-Do NOT use single ambiguous words. For example: Use "stock market trading" instead of "stock", use "bank vault" instead of "bank", use "police car flashing" instead of "police". Always be literal, visual, and descriptive to ensure the stock video platform returns exactly what you want.
+Do NOT use single ambiguous words. For example: Use "stock market trading" instead of "stock", use "bank vault" instead of "bank", use "police car flashing" instead of "police". Always be literal, visual, and descriptive.
 
 🚀 CRITICAL VIRAL SOCIAL METADATA ENGINE:
-You must also generate hyper-optimized viral metadata customized for platform APIs. 
-Fill in the text fields dynamically based on the story, but KEEP the boolean/integer fields exactly as they appear in the structure below.
+Generate hyper-optimized viral metadata customized for platform APIs. 
+Fill in the text fields dynamically based on the story, but KEEP the boolean/integer fields exactly as they appear below.
 
 Output ONLY a JSON object with this exact structure:
 {
@@ -113,7 +122,7 @@ Output ONLY a JSON object with this exact structure:
     "youtube_shorts": {
       "title": "Curiosity-gap hook under 60 chars",
       "description": "Engaging 2-sentence breakdown ending with trending shorts tags.",
-      "tags": ["urbanlegends", "mysteries", "shorts", "finance"],
+      "tags": ["urbanlegends", "mysteries", "shorts", "storytime"],
       "made_for_kids": false,
       "category_id": "24"
     },
@@ -126,7 +135,7 @@ Output ONLY a JSON object with this exact structure:
       "brand_content_toggle": false
     },
     "instagram_reels": {
-      "caption": "High-value storytelling layout ending with 'Follow for more daily mysteries.' #reelsviral #mysterychannel",
+      "caption": "High-value storytelling layout ending with 'Follow for more fascinating stories.' #reelsviral #storytime",
       "share_to_feed": true,
       "cover_image_timestamp_ms": 1500
     }
@@ -146,11 +155,13 @@ Output ONLY a JSON object with this exact structure:
 
 def generate_with_fallback(contents, model_queue, config=None):
     global current_gemini_idx
-    while current_gemini_idx < len(GEMINI_KEYS):
+    start_idx = current_gemini_idx
+    
+    while True:
         current_key = GEMINI_KEYS[current_gemini_idx]
         temp_client = genai.Client(api_key=current_key)
         
-        for i, model_name in enumerate(model_queue):
+        for model_name in model_queue:
             try:
                 response = temp_client.models.generate_content(
                     model=model_name, contents=contents, config=config
@@ -159,11 +170,14 @@ def generate_with_fallback(contents, model_queue, config=None):
             except APIError as e:
                 err_str = str(e).lower()
                 if any(k in err_str for k in ["429", "503", "500", "404", "not_found", "quota", "exhausted"]):
-                    time.sleep(2) 
+                    time.sleep(1) 
                     continue
-                raise e
-        current_gemini_idx += 1
-    raise Exception("Gemini API limits reached on all keys.")
+                print(f"⚠️ Model {model_name} failed: {e}")
+                
+        # Cycle to next key if all models on this key fail
+        current_gemini_idx = (current_gemini_idx + 1) % len(GEMINI_KEYS)
+        if current_gemini_idx == start_idx:
+            raise Exception("❌ Gemini API limits reached or failed on all available keys and models.")
 
 # ==============================================================================
 # CORE WORKFLOW FUNCTIONS
@@ -192,7 +206,10 @@ def generate_topic_script_tags(profile, history, script_cache_file, is_batching)
     response = generate_with_fallback(
         contents=prompt,
         model_queue=ROUTING_LOGIC["heavy_reasoning"],
-        config=types.GenerateContentConfig(response_mime_type="application/json")
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            temperature=0.7
+        )
     )
     
     data = json.loads(response.text)
@@ -223,17 +240,21 @@ def generate_audio_and_captions(script_text, profile, audio_path, timestamps_cac
         }
     }
     
-    while current_eleven_idx < len(ELEVEN_KEYS):
+    start_idx = current_eleven_idx
+    while True:
         headers = {"Content-Type": "application/json", "xi-api-key": ELEVEN_KEYS[current_eleven_idx]}
         resp = requests.post(url, json=data, headers=headers)
         
         if resp.status_code in [401, 402, 429]:
-            current_eleven_idx += 1
+            current_eleven_idx = (current_eleven_idx + 1) % len(ELEVEN_KEYS)
+            if current_eleven_idx == start_idx:
+                raise Exception("❌ CRITICAL: All ElevenLabs keys are exhausted.")
             time.sleep(1)
             continue
+            
         resp.raise_for_status()
-        
         response_data = resp.json()
+        
         with open(audio_path, 'wb') as f:
             f.write(base64.b64decode(response_data["audio_base64"]))
             
@@ -259,22 +280,23 @@ def generate_audio_and_captions(script_text, profile, audio_path, timestamps_cac
 
         with open(timestamps_cache_file, "w", encoding="utf-8") as f:
             json.dump(subs, f, indent=4)
+            
         return audio_path, subs
-
-    raise Exception("❌ CRITICAL: All ElevenLabs keys are exhausted.")
 
 def get_pexels_data(url):
     global current_pexels_idx
-    while current_pexels_idx < len(PEXELS_KEYS):
+    start_idx = current_pexels_idx
+    while True:
         headers = {"Authorization": PEXELS_KEYS[current_pexels_idx]}
         resp = requests.get(url, headers=headers)
         if resp.status_code == 429:
-            current_pexels_idx += 1
+            current_pexels_idx = (current_pexels_idx + 1) % len(PEXELS_KEYS)
+            if current_pexels_idx == start_idx:
+                raise Exception("❌ Pexels API exhausted on all keys.")
             time.sleep(2)
             continue
         resp.raise_for_status()
         return resp.json()
-    raise Exception("❌ Pexels API exhausted.")
 
 def download_b_roll(tags, assets_dir, is_batching): 
     required = 16
@@ -287,55 +309,68 @@ def download_b_roll(tags, assets_dir, is_batching):
     downloaded = []
     
     for i, tag in enumerate(tags[:required]):
-        # UPDATED: Better fallback strategy that preserves compound words
         search_queries = [
             tag, 
             f"{tag} cinematic", 
             "abstract mystery background dark"
         ]
-        found = False
         
-        # Create a filesystem-safe version of the tag
         safe_tag = "".join([c for c in tag if c.isalnum() or c == ' ']).strip().replace(' ', '_')
-        if not safe_tag:
-            safe_tag = "fallback"
+        if not safe_tag: safe_tag = "fallback"
         
+        slot_filled = False
         for query in search_queries:
-            if found: break 
-            url = f"https://api.pexels.com/videos/search?query={query}&orientation=portrait&per_page=5"
+            if slot_filled: break 
+            
+            url = f"https://api.pexels.com/videos/search?query={query}&orientation=portrait&per_page=15"
             try:
                 data = get_pexels_data(url)
+                
                 for video in data.get('videos', []):
-                    if video.get('duration', 0) < 5: continue 
+                    if video.get('duration', 0) < 3: continue 
+                    
                     files = video.get('video_files', [])
                     hd_files = [v for v in files if v.get('quality') == 'hd' and v.get('width', 0) >= 720]
                     best_file = hd_files[0] if hd_files else files[0]
                     
                     vid_resp = requests.get(best_file['link'])
+                    final_filename = os.path.join(assets_dir, f"broll_{i:02d}_{safe_tag}_{uuid.uuid4().hex[:4]}.mp4")
                     
-                    # Inject chronological index and the tag directly into the filename
-                    filename = os.path.join(assets_dir, f"broll_{i:02d}_{safe_tag}_{uuid.uuid4().hex[:4]}.mp4")
+                    with open(final_filename, 'wb') as f: 
+                        f.write(vid_resp.content)
                     
-                    with open(filename, 'wb') as f: f.write(vid_resp.content)
-                    downloaded.append(filename)
-                    found = True
-                    break 
-            except Exception:
+                    downloaded.append(final_filename)
+                    print(f"   ✅ Slot {i+1}/16 filled: '{tag}'")
+                    slot_filled = True
+                    break
+                        
+            except Exception as e:
+                print(f"   ⚠️ Error fetching Pexels data for '{query}': {e}")
                 pass
+                
+        # If all queries failed to yield a video, generate a silent fallback
+        if not slot_filled:
+            print(f"   ⚠️ Exhausted options for '{tag}'. Using emergency fallback.")
+            if downloaded:
+                import shutil
+                fallback_name = os.path.join(assets_dir, f"broll_{i:02d}_emergency_fallback_{uuid.uuid4().hex[:4]}.mp4")
+                shutil.copy(downloaded[-1], fallback_name)
+                downloaded.append(fallback_name)
+
     return downloaded
 
 def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, final_title, output_dir, profile):
     print("🎞️ Stitching visual, audio, and captions in MoviePy...")
     audio = AudioFileClip(audio_path)
     audio_duration = audio.duration
-    clip_duration = audio_duration / len(valid_videos)
+    
+    clip_duration = audio_duration / len(valid_videos) if valid_videos else audio_duration
 
     if RENDER_QUALITY == "test":
         target_w, target_h, render_fps, font_size, stroke_thickness, offset_shadow = 540, 960, 30, 50, 7, 4
     else:
         target_w, target_h, render_fps, font_size, stroke_thickness, offset_shadow = 1080, 1920, 60, 98, 15, 8
 
-    # Extract dynamic settings from the profile
     bg_vol = profile.get("bg_music_volume", 0.08)
     vis_settings = profile.get("visual_settings", {})
     font_choice = vis_settings.get("font_family", "Arial-Black")
@@ -349,21 +384,17 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, final_tit
         clip = VideoFileClip(vid).without_audio().set_fps(render_fps)
         w, h = clip.size
         
-        # 🚀 ANTI-BLACK-BAR FIX: Calculate the scaling factor needed to fill both dimensions
         scale_w = target_w / float(w)
         scale_h = target_h / float(h)
-        scale_factor = max(scale_w, scale_h) # Always scale by the larger requirement to guarantee full coverage
+        scale_factor = max(scale_w, scale_h) 
         
-        # Resize the clip using the master scale factor
         clip = clip.resize(scale_factor)
-        
-        # Now that the clip is guaranteed to be equal to or larger than the target on both axes, crop the exact center
         clip = clip.crop(x_center=clip.w/2.0, y_center=clip.h/2.0, width=target_w, height=target_h)
             
         if clip.duration < clip_duration:
             clip = clip.fx(vfx.loop, duration=clip_duration)
         else:
-            start_time = 2.0 if clip.duration >= (clip_duration + 2.0) else 0.0
+            start_time = 1.0 if clip.duration >= (clip_duration + 1.0) else 0.0
             clip = clip.subclip(start_time, start_time + clip_duration)
             
         clips.append(clip)
@@ -442,7 +473,7 @@ def cleanup_workspace(assets_dir, bg_music_filename):
 # ==============================================================================
 
 def main():
-    parser = argparse.ArgumentParser(description="Batch Video Slop Generator")
+    parser = argparse.ArgumentParser(description="Batch Video Generator")
     parser.add_argument("--profile", type=str, default="urban_mysteries", help="Name of the channel profile to load")
     parser.add_argument("--count", type=int, default=1, help="Number of videos to generate in this batch")
     args = parser.parse_args()
@@ -485,10 +516,8 @@ def main():
         bg_music_path = local_bg_music if os.path.exists(local_bg_music) else None
         valid_videos = download_b_roll(gemini_data['tags'], assets_dir, is_batching)
         
-        # 🚀 Pass the entire profile down to assemble_video
         _, returned_base_filename = assemble_video(audio_path, bg_music_path, valid_videos, subs_data, title, video_out_dir, profile)
         
-        # 🚀 WRITE COMPANION METADATA JSON ARTIFACT
         if 'metadata' in gemini_data:
             metadata_output_path = os.path.join(video_out_dir, f"{returned_base_filename}.json")
             with open(metadata_output_path, "w", encoding="utf-8") as meta_f:
