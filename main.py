@@ -25,7 +25,7 @@ import moviepy.audio.fx.all as afx
 DEV_MODE = False
 
 # ⚡ RENDER SPEED TOGGLE ("test" or "production") ⚡
-RENDER_QUALITY = "test"
+RENDER_QUALITY = "production"
 
 # Load environment variables from the local .env file
 load_dotenv()
@@ -445,7 +445,17 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, final_tit
     base_filename = safe_title.replace(' ', '_')
     output_path = os.path.join(output_dir, f"{base_filename}.mp4")
     
-    final_video.write_videofile(output_path, fps=render_fps, codec="libx264", audio_codec="aac", preset="ultrafast", threads=4, logger='bar')
+    # 🎯 FIX APPLIED HERE: Replaced preset="ultrafast" with "fast" and added "-crf 23" for visually lossless high-compression.
+    final_video.write_videofile(
+        output_path, 
+        fps=render_fps, 
+        codec="libx264", 
+        audio_codec="aac", 
+        preset="fast", 
+        ffmpeg_params=["-crf", "23"], 
+        threads=4, 
+        logger='bar'
+    )
     
     final_video.close()
     final_visual.close()
