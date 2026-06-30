@@ -6,6 +6,7 @@ import requests
 import base64
 import re
 import argparse
+import random # ✅ FIX APPLIED: Added for Pexels selection randomization
 from dotenv import load_dotenv
 
 # Using the brand new, officially supported Google GenAI SDK
@@ -25,7 +26,7 @@ import moviepy.audio.fx.all as afx
 DEV_MODE = False
 
 # ⚡ RENDER SPEED TOGGLE ("test" or "production") ⚡
-RENDER_QUALITY = "production"
+RENDER_QUALITY = "test"
 
 # Load environment variables from the local .env file
 load_dotenv()
@@ -106,8 +107,11 @@ You MUST format the "script" text to sound natural but keep it clean:
 3. Write out dates and numbers using digits (e.g., "2026" or "100").
 
 CRITICAL VISUAL B-ROLL RULE:
-The 'tags' array MUST contain exactly 16 highly specific, literal 2-3 word search phrases that match the chronological story beats for Pexels. 
-Do NOT use single ambiguous words. For example: Use "stock market trading" instead of "stock", use "bank vault" instead of "bank", use "police car flashing" instead of "police". Always be literal, visual, and descriptive.
+The 'tags' array MUST contain exactly 16 SINGLE-WORD search terms that match the chronological story beats for Pexels. 
+Do NOT use multi-word phrases. Pexels cannot process them. 
+Bad: ["stock market trading", "police car flashing"]
+Good: ["stocks", "police", "vault", "hacker", "skyscraper", "documents"]
+Always be literal, visual, and highly descriptive.
 
 🚀 CRITICAL VIRAL SOCIAL METADATA ENGINE:
 Generate hyper-optimized viral metadata customized for platform APIs. 
@@ -298,6 +302,7 @@ def get_pexels_data(url):
         resp.raise_for_status()
         return resp.json()
 
+# ✅ FIX APPLIED: Refactored search logic with fallback queries and random video selection
 def download_b_roll(tags, assets_dir, is_batching): 
     required = 16
     existing = [os.path.join(assets_dir, f) for f in os.listdir(assets_dir) if f.startswith("broll_") and f.endswith(".mp4")]
@@ -309,10 +314,14 @@ def download_b_roll(tags, assets_dir, is_batching):
     downloaded = []
     
     for i, tag in enumerate(tags[:required]):
+        # Extract just the main noun for a wider Pexels net if the specific phrase fails
+        primary_keyword = tag.split()[0] if " " in tag else tag 
+
         search_queries = [
             tag, 
-            f"{tag} cinematic", 
-            "abstract mystery background dark"
+            primary_keyword, # Fallback 1: Just the first word (usually the strongest noun)
+            "mystery",       # Fallback 2: Broad theme (will be randomized)
+            "abstract dark"  # Fallback 3: Safe atmospheric fallback
         ]
         
         safe_tag = "".join([c for c in tag if c.isalnum() or c == ' ']).strip().replace(' ', '_')
@@ -325,9 +334,11 @@ def download_b_roll(tags, assets_dir, is_batching):
             url = f"https://api.pexels.com/videos/search?query={query}&orientation=portrait&per_page=15"
             try:
                 data = get_pexels_data(url)
+                valid_videos_in_query = [v for v in data.get('videos', []) if v.get('duration', 0) >= 3]
                 
-                for video in data.get('videos', []):
-                    if video.get('duration', 0) < 3: continue 
+                if valid_videos_in_query:
+                    # Randomize the selection from the first page of results to avoid duplicate B-roll
+                    video = random.choice(valid_videos_in_query)
                     
                     files = video.get('video_files', [])
                     hd_files = [v for v in files if v.get('quality') == 'hd' and v.get('width', 0) >= 720]
@@ -340,7 +351,7 @@ def download_b_roll(tags, assets_dir, is_batching):
                         f.write(vid_resp.content)
                     
                     downloaded.append(final_filename)
-                    print(f"   ✅ Slot {i+1}/16 filled: '{tag}'")
+                    print(f"   ✅ Slot {i+1}/16 filled: '{query}'")
                     slot_filled = True
                     break
                         
@@ -364,6 +375,8 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, final_tit
     audio = AudioFileClip(audio_path)
     audio_duration = audio.duration
     
+    # NOTE: Future architectural upgrade - replace this flat division with logic that uses 
+    # ElevenLabs paragraph/sentence timestamps to dynamically set clip_duration per clip.
     clip_duration = audio_duration / len(valid_videos) if valid_videos else audio_duration
 
     if RENDER_QUALITY == "test":
@@ -445,7 +458,6 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, final_tit
     base_filename = safe_title.replace(' ', '_')
     output_path = os.path.join(output_dir, f"{base_filename}.mp4")
     
-    # 🎯 FIX APPLIED HERE: Replaced preset="ultrafast" with "fast" and added "-crf 23" for visually lossless high-compression.
     final_video.write_videofile(
         output_path, 
         fps=render_fps, 

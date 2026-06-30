@@ -12,6 +12,7 @@ assets*/*
 !assets_urban_mysteries/bg_music.mp3
 
 output*/
+uploaded/
 
 # 🧠 STATE / MEMORY
 # Keeps your local generated history separate from the public repo
