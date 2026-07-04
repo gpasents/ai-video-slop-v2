@@ -6,7 +6,8 @@ import requests
 import base64
 import re
 import argparse
-import random # ✅ FIX APPLIED: Added for Pexels selection randomization
+import random
+import math
 from dotenv import load_dotenv
 
 # Using the brand new, officially supported Google GenAI SDK
@@ -14,7 +15,7 @@ from google import genai
 from google.genai import types
 from google.genai.errors import APIError
 
-from moviepy.editor import VideoFileClip, AudioFileClip, TextClip, CompositeVideoClip, concatenate_videoclips, CompositeAudioClip
+from moviepy.editor import VideoFileClip, AudioFileClip, TextClip, ImageClip, CompositeVideoClip, concatenate_videoclips, CompositeAudioClip
 import moviepy.video.fx.all as vfx
 import moviepy.audio.fx.all as afx
 
@@ -23,7 +24,7 @@ import moviepy.audio.fx.all as afx
 # ==============================================================================
 
 # 🛑 DEVELOPMENT MODE TOGGLE 🛑
-DEV_MODE = False
+DEV_MODE = True
 
 # ⚡ RENDER SPEED TOGGLE ("test" or "production") ⚡
 RENDER_QUALITY = "test"
@@ -69,10 +70,10 @@ def load_or_create_profile(profile_name):
         with open(profile_path, "r", encoding="utf-8") as f:
             return json.load(f)
             
-    print(f"⚠️ Profile '{profile_name}' not found. Auto-generating expanded Urban Mysteries profile...")
+    print(f"⚠️ Profile '{profile_name}' not found. Auto-generating expanded Viral Variety profile...")
     
     default_profile = {
-        "theme_name": "Urban Mysteries",
+        "theme_name": "Viral Variety",
         "voice_id": "TX3LPaxmHKxFdv7VOQHJ", # Liam
         "voice_model": "eleven_multilingual_v2",
         "voice_stability": 0.30,
@@ -87,7 +88,7 @@ def load_or_create_profile(profile_name):
         },
         "system_prompt": """
 You are a viral YouTube Shorts, TikTok, and Instagram Reels producer specializing in high-retention storytelling. 
-Create a unique 45-second script based on shocking urban anomalies, financial system glitches, or bizarre real-world modern mysteries.
+Create a unique 45-second script based on fascinating facts, macabre history, bizarre science, or intriguing true stories (e.g., death row last meals, historical ironies, survival stories, mysteries).
 
 Do NOT use any of these past topics: {history}
 
@@ -109,41 +110,34 @@ You MUST format the "script" text to sound natural but keep it clean:
 CRITICAL VISUAL B-ROLL RULE:
 The 'tags' array MUST contain exactly 16 SINGLE-WORD search terms that match the chronological story beats for Pexels. 
 Do NOT use multi-word phrases. Pexels cannot process them. 
-Bad: ["stock market trading", "police car flashing"]
-Good: ["stocks", "police", "vault", "hacker", "skyscraper", "documents"]
 Always be literal, visual, and highly descriptive.
 
-🚀 CRITICAL VIRAL SOCIAL METADATA ENGINE:
-Generate hyper-optimized viral metadata customized for platform APIs. 
-Fill in the text fields dynamically based on the story, but KEEP the boolean/integer fields exactly as they appear below.
+🚀 VISUAL EFFECTS & DYNAMIC IMAGES:
+You must pick 3 to 5 key words in the script and assign them an effect. The 'trigger_word' MUST exactly match a word spoken in the script.
+- Use "emoji" for generic concepts (e.g., 🍔, 💀).
+- Use "dynamic_image" ONLY for specific, real-world historical figures, places, or famous items that have Wikipedia pages (e.g., "Ted_Bundy" or "Alcatraz_Island"). Provide the exact Wikipedia page title in 'wiki_title'.
+- For 'sound_effect', assume standard files exist like 'pop.mp3', 'swoosh.mp3', or 'ding.mp3'.
 
 Output ONLY a JSON object with this exact structure:
 {
   "title": "Internal working title",
   "script": "The pacing-optimized spoken script. Around 110-130 words.",
-  "tags": ["phrase 1", "phrase 2", "phrase 3", "phrase 4", "phrase 5", "phrase 6", "phrase 7", "phrase 8", "phrase 9", "phrase 10", "phrase 11", "phrase 12", "phrase 13", "phrase 14", "phrase 15", "phrase 16"],
-  "metadata": {
-    "youtube_shorts": {
-      "title": "Curiosity-gap hook under 60 chars",
-      "description": "Engaging 2-sentence breakdown ending with trending shorts tags.",
-      "tags": ["urbanlegends", "mysteries", "shorts", "storytime"],
-      "made_for_kids": false,
-      "category_id": "24"
+  "tags": ["word1", "word2", "word3", "word4", "word5", "word6", "word7", "word8", "word9", "word10", "word11", "word12", "word13", "word14", "word15", "word16"],
+  "effects": [
+    {
+      "trigger_word": "burger",
+      "type": "emoji",
+      "value": "🍔",
+      "sound_effect": "pop.mp3"
     },
-    "tiktok": {
-      "caption": "High-converting retention question + niche tags like #fyp #mystery",
-      "disable_comment": false,
-      "disable_duet": false,
-      "disable_stitch": false,
-      "video_cover_timestamp_ms": 1500,
-      "brand_content_toggle": false
-    },
-    "instagram_reels": {
-      "caption": "High-value storytelling layout ending with 'Follow for more fascinating stories.' #reelsviral #storytime",
-      "share_to_feed": true,
-      "cover_image_timestamp_ms": 1500
+    {
+      "trigger_word": "Gacy",
+      "type": "dynamic_image",
+      "wiki_title": "John_Wayne_Gacy",
+      "sound_effect": "camera_shutter.mp3"
     }
-  }
+  ],
+  "metadata": { ... }
 }
 """
     }
@@ -178,7 +172,6 @@ def generate_with_fallback(contents, model_queue, config=None):
                     continue
                 print(f"⚠️ Model {model_name} failed: {e}")
                 
-        # Cycle to next key if all models on this key fail
         current_gemini_idx = (current_gemini_idx + 1) % len(GEMINI_KEYS)
         if current_gemini_idx == start_idx:
             raise Exception("❌ Gemini API limits reached or failed on all available keys and models.")
@@ -201,6 +194,7 @@ def save_history(history_file, topic):
 
 def generate_topic_script_tags(profile, history, script_cache_file, is_batching):
     if DEV_MODE and not is_batching and os.path.exists(script_cache_file):
+        print("♻️ DEV MODE: Loading script from cache...")
         with open(script_cache_file, "r", encoding="utf-8") as f:
             return json.load(f)
 
@@ -224,12 +218,16 @@ def generate_topic_script_tags(profile, history, script_cache_file, is_batching)
         
     return data
 
-def generate_audio_and_captions(script_text, profile, audio_path, timestamps_cache_file, is_batching):
+def generate_audio_and_captions(script_text, profile, audio_path, timestamps_cache_file, effects_cache_file, is_batching, effects=None):
     global current_eleven_idx
     
-    if DEV_MODE and not is_batching and os.path.exists(audio_path) and os.path.exists(timestamps_cache_file):
+    if DEV_MODE and not is_batching and os.path.exists(audio_path) and os.path.exists(timestamps_cache_file) and os.path.exists(effects_cache_file):
+        print("♻️ DEV MODE: Loading audio, timestamps, and matched effects from cache...")
         with open(timestamps_cache_file, "r", encoding="utf-8") as f:
-            return audio_path, json.load(f)
+            subs = json.load(f)
+        with open(effects_cache_file, "r", encoding="utf-8") as f:
+            matched_effects_timeline = json.load(f)
+        return audio_path, subs, matched_effects_timeline
 
     print("🎙️ Generating ElevenLabs voiceover...")
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{profile['voice_id']}/with-timestamps"
@@ -278,14 +276,75 @@ def generate_audio_and_captions(script_text, profile, audio_path, timestamps_cac
         if current_word: words.append((word_start, ends[-1], current_word))
 
         subs = []
+        matched_effects_timeline = []
+        
         for w_start, w_end, word in words:
             clean_word = re.sub(r'[,—\-"“”\.]', '', word).strip()
-            if clean_word: subs.append([w_start, w_end, clean_word])
+            if clean_word: 
+                subs.append([w_start, w_end, clean_word])
+                
+                if effects:
+                    for effect in effects:
+                        if effect.get('trigger_word', '').lower() == clean_word.lower():
+                            matched_effects_timeline.append({
+                                "start": w_start,
+                                "type": effect.get('type', 'emoji'),
+                                "value": effect.get('value', effect.get('wiki_title', '')),
+                                "sound": effect.get('sound_effect')
+                            })
+                            print(f"  ⚡ Trigger '{clean_word}' matched! Synchronized for render.")
 
         with open(timestamps_cache_file, "w", encoding="utf-8") as f:
             json.dump(subs, f, indent=4)
             
-        return audio_path, subs
+        with open(effects_cache_file, "w", encoding="utf-8") as f:
+            json.dump(matched_effects_timeline, f, indent=4)
+            
+        return audio_path, subs, matched_effects_timeline
+
+# --- PHASE 3 UPDATE: Wikipedia Image Fetcher with User-Agent Fix ---
+def fetch_wikipedia_image(wiki_title, output_dir):
+    print(f"🔍 Searching Wikipedia for image of: {wiki_title}")
+    url = f"https://en.wikipedia.org/w/api.php?action=query&prop=pageimages&format=json&piprop=original&titles={wiki_title}"
+    
+    # Wikimedia requires a User-Agent header for API access
+    headers = {
+        "User-Agent": "ViralVideoGenerator/1.0 (Python/Requests)"
+    }
+    
+    try:
+        resp = requests.get(url, headers=headers)
+        resp.raise_for_status() # Catch HTTP errors like 403 or 404 immediately
+        
+        data = resp.json()
+        pages = data.get("query", {}).get("pages", {})
+        
+        for page_id, page_data in pages.items():
+            # If page_id is -1, the Wikipedia page doesn't exist
+            if str(page_id) == "-1":
+                print(f"  ⚠️ Wikipedia page '{wiki_title}' not found.")
+                return None
+                
+            if "original" in page_data:
+                image_url = page_data["original"]["source"]
+                ext = image_url.split('.')[-1][:4] 
+                filename = f"wiki_{wiki_title}.{ext}"
+                filepath = os.path.join(output_dir, filename)
+                
+                # Check for cached version
+                if not os.path.exists(filepath):
+                    img_data = requests.get(image_url, headers=headers).content
+                    with open(filepath, 'wb') as f:
+                        f.write(img_data)
+                
+                print(f"  ✅ Secured dynamic image: {filename}")
+                return filepath
+                
+        print(f"  ⚠️ No Wikipedia main image found for {wiki_title}.")
+        return None
+    except Exception as e:
+        print(f"  ⚠️ Failed to fetch Wikipedia image for {wiki_title}: {e}")
+        return None
 
 def get_pexels_data(url):
     global current_pexels_idx
@@ -302,7 +361,6 @@ def get_pexels_data(url):
         resp.raise_for_status()
         return resp.json()
 
-# ✅ FIX APPLIED: Refactored search logic with fallback queries and random video selection
 def download_b_roll(tags, assets_dir, is_batching): 
     required = 16
     existing = [os.path.join(assets_dir, f) for f in os.listdir(assets_dir) if f.startswith("broll_") and f.endswith(".mp4")]
@@ -314,14 +372,13 @@ def download_b_roll(tags, assets_dir, is_batching):
     downloaded = []
     
     for i, tag in enumerate(tags[:required]):
-        # Extract just the main noun for a wider Pexels net if the specific phrase fails
         primary_keyword = tag.split()[0] if " " in tag else tag 
 
         search_queries = [
             tag, 
-            primary_keyword, # Fallback 1: Just the first word (usually the strongest noun)
-            "mystery",       # Fallback 2: Broad theme (will be randomized)
-            "abstract dark"  # Fallback 3: Safe atmospheric fallback
+            primary_keyword, 
+            "mystery",       
+            "abstract dark"  
         ]
         
         safe_tag = "".join([c for c in tag if c.isalnum() or c == ' ']).strip().replace(' ', '_')
@@ -337,7 +394,6 @@ def download_b_roll(tags, assets_dir, is_batching):
                 valid_videos_in_query = [v for v in data.get('videos', []) if v.get('duration', 0) >= 3]
                 
                 if valid_videos_in_query:
-                    # Randomize the selection from the first page of results to avoid duplicate B-roll
                     video = random.choice(valid_videos_in_query)
                     
                     files = video.get('video_files', [])
@@ -356,10 +412,8 @@ def download_b_roll(tags, assets_dir, is_batching):
                     break
                         
             except Exception as e:
-                print(f"   ⚠️ Error fetching Pexels data for '{query}': {e}")
                 pass
                 
-        # If all queries failed to yield a video, generate a silent fallback
         if not slot_filled:
             print(f"   ⚠️ Exhausted options for '{tag}'. Using emergency fallback.")
             if downloaded:
@@ -370,13 +424,11 @@ def download_b_roll(tags, assets_dir, is_batching):
 
     return downloaded
 
-def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, final_title, output_dir, profile):
-    print("🎞️ Stitching visual, audio, and captions in MoviePy...")
+def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_effects, final_title, output_dir, profile):
+    print("🎞️ Stitching visual, audio, captions, and EFFECTS in MoviePy...")
     audio = AudioFileClip(audio_path)
     audio_duration = audio.duration
     
-    # NOTE: Future architectural upgrade - replace this flat division with logic that uses 
-    # ElevenLabs paragraph/sentence timestamps to dynamically set clip_duration per clip.
     clip_duration = audio_duration / len(valid_videos) if valid_videos else audio_duration
 
     if RENDER_QUALITY == "test":
@@ -414,17 +466,28 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, final_tit
         
     final_visual = concatenate_videoclips(clips, method="compose")
     
+    # --- MIX SOUND EFFECTS ---
+    sfx_clips = []
+    for effect in matched_effects:
+        sfx_file = effect.get('sound')
+        if sfx_file:
+            sfx_path = os.path.join("sfx", sfx_file)
+            if os.path.exists(sfx_path):
+                sfx = AudioFileClip(sfx_path).set_start(effect['start'])
+                sfx_clips.append(sfx)
+    
     bg_clip = None
     if bg_music_path and os.path.exists(bg_music_path):
         bg_clip = AudioFileClip(bg_music_path).fx(afx.volumex, bg_vol)
         bg_clip = afx.audio_loop(bg_clip, duration=audio_duration)
-        final_audio = CompositeAudioClip([audio, bg_clip])
+        final_audio = CompositeAudioClip([audio, bg_clip] + sfx_clips)
     else:
-        final_audio = audio
+        final_audio = CompositeAudioClip([audio] + sfx_clips) if sfx_clips else audio
         
     final_visual = final_visual.set_audio(final_audio).subclip(0, audio_duration)
-    text_clips = []
     
+    # --- CAPTIONS ---
+    text_clips = []
     def snappy_pop(t):
         if t < 0.075: return 0.85 + 2.66 * t  
         elif t < 0.15: return 1.05 - 0.66 * (t - 0.075) 
@@ -452,8 +515,30 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, final_tit
         
         word_clip = CompositeVideoClip([txt_shadow, txt_stroke, txt_fill], size=(box_w, box_h)).resize(snappy_pop).set_position(('center', caption_y_pos)).set_start(start).set_end(end)
         text_clips.append(word_clip)
+
+    # --- PHASE 3: VISUAL EFFECTS (EMOJIS & DYNAMIC IMAGES) ---
+    effect_clips = []
+    for effect in matched_effects:
+        if effect['type'] == 'emoji' and effect['value']:
+            fx_clip = TextClip(effect['value'], font="Segoe-UI-Emoji", fontsize=150 if RENDER_QUALITY == "test" else 300, color='white')
+            fx_clip = fx_clip.set_position(('center', target_h * 0.35)).set_start(effect['start']).set_duration(1.5)
+            fx_clip = fx_clip.resize(lambda t: min(1.0, 0.5 + 2*t) if t < 0.25 else 1.0)
+            effect_clips.append(fx_clip)
+            
+        elif effect['type'] == 'dynamic_image' and effect.get('local_path'):
+            if os.path.exists(effect['local_path']):
+                fx_clip = ImageClip(effect['local_path'])
+                
+                # Scale the image based on render target size (e.g., 60% of width)
+                target_img_width = int(target_w * 0.6)
+                fx_clip = fx_clip.resize(width=target_img_width)
+                
+                fx_clip = fx_clip.set_position(('center', target_h * 0.3)).set_start(effect['start']).set_duration(2.0)
+                fx_clip = fx_clip.resize(lambda t: min(1.0, 0.5 + 2*t) if t < 0.25 else 1.0)
+                effect_clips.append(fx_clip)
         
-    final_video = CompositeVideoClip([final_visual] + text_clips)
+    final_video = CompositeVideoClip([final_visual] + text_clips + effect_clips)
+    
     safe_title = "".join([c for c in final_title if c.isalpha() or c.isdigit() or c==' ']).rstrip()
     base_filename = safe_title.replace(' ', '_')
     output_path = os.path.join(output_dir, f"{base_filename}.mp4")
@@ -485,7 +570,11 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, final_tit
 def cleanup_workspace(assets_dir, bg_music_filename):
     print("🧹 Running surgical cleanup (Leaving history and bg_music intact)...")
     for file in os.listdir(assets_dir):
-        if file.endswith(".mp4") or file.endswith(".jpg") or file == "voiceover.mp3" or "cache" in file:
+        # PHASE 3: Exclude Wikipedia images from being deleted!
+        if file.startswith("wiki_"):
+            continue
+            
+        if file.endswith(".mp4") or file.endswith(".jpg") or file.endswith(".png") or file == "voiceover.mp3" or "cache" in file:
             if file != bg_music_filename:
                 try: os.remove(os.path.join(assets_dir, file))
                 except Exception: pass
@@ -496,7 +585,7 @@ def cleanup_workspace(assets_dir, bg_music_filename):
 
 def main():
     parser = argparse.ArgumentParser(description="Batch Video Generator")
-    parser.add_argument("--profile", type=str, default="urban_mysteries", help="Name of the channel profile to load")
+    parser.add_argument("--profile", type=str, default="viral_variety", help="Name of the channel profile to load")
     parser.add_argument("--count", type=int, default=1, help="Number of videos to generate in this batch")
     args = parser.parse_args()
 
@@ -509,6 +598,7 @@ def main():
     history_file = os.path.join(assets_dir, "history.json")
     script_cache = os.path.join(assets_dir, "script_cache.json")
     timestamps_cache = os.path.join(assets_dir, "timestamps_cache.json")
+    effects_cache = os.path.join(assets_dir, "effects_cache.json")
     local_bg_music = os.path.join(assets_dir, profile["bg_music_file"])
     
     os.makedirs(assets_dir, exist_ok=True)
@@ -531,14 +621,23 @@ def main():
         video_out_dir = os.path.join(base_output_dir, base_filename)
         os.makedirs(video_out_dir, exist_ok=True)
         
-        audio_path, subs_data = generate_audio_and_captions(
-            gemini_data['script'], profile, os.path.join(assets_dir, "voiceover.mp3"), timestamps_cache, is_batching
+        script_effects = gemini_data.get('effects', [])
+        
+        audio_path, subs_data, matched_effects = generate_audio_and_captions(
+            gemini_data['script'], profile, os.path.join(assets_dir, "voiceover.mp3"), timestamps_cache, effects_cache, is_batching, effects=script_effects
         )
+        
+        # --- PHASE 3: Download Dynamic Images BEFORE rendering ---
+        for effect in matched_effects:
+            if effect['type'] == 'dynamic_image' and effect.get('value'):
+                local_path = fetch_wikipedia_image(effect['value'], assets_dir)
+                if local_path:
+                    effect['local_path'] = local_path
         
         bg_music_path = local_bg_music if os.path.exists(local_bg_music) else None
         valid_videos = download_b_roll(gemini_data['tags'], assets_dir, is_batching)
         
-        _, returned_base_filename = assemble_video(audio_path, bg_music_path, valid_videos, subs_data, title, video_out_dir, profile)
+        _, returned_base_filename = assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_effects, title, video_out_dir, profile)
         
         if 'metadata' in gemini_data:
             metadata_output_path = os.path.join(video_out_dir, f"{returned_base_filename}.json")
