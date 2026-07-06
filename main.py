@@ -8,7 +8,9 @@ import re
 import argparse
 import random
 import math
+import io
 from dotenv import load_dotenv
+from PIL import Image, UnidentifiedImageError
 
 # Using the brand new, officially supported Google GenAI SDK
 from google import genai
@@ -24,7 +26,7 @@ import moviepy.audio.fx.all as afx
 # ==============================================================================
 
 # 🛑 DEVELOPMENT MODE TOGGLE 🛑
-DEV_MODE = True
+DEV_MODE = False
 
 # ⚡ RENDER SPEED TOGGLE ("test" or "production") ⚡
 RENDER_QUALITY = "test"
@@ -49,9 +51,14 @@ ROUTING_LOGIC = {
 GEMINI_KEYS = [k.strip() for k in os.environ.get("GEMINI_API_KEYS", os.environ.get("GEMINI_API_KEY", "")).split(",") if k.strip()]
 ELEVEN_KEYS = [k.strip() for k in os.environ.get("ELEVENLABS_API_KEYS", os.environ.get("ELEVENLABS_API_KEY", "")).split(",") if k.strip()]
 PEXELS_KEYS = [k.strip() for k in os.environ.get("PEXELS_API_KEYS", os.environ.get("PEXELS_API_KEY", "")).split(",") if k.strip()]
+SERPER_API_KEY = os.environ.get("SERPER_API_KEY", "").strip()
 
 if not GEMINI_KEYS or not ELEVEN_KEYS or not PEXELS_KEYS:
     print("❌ API Key Error: Missing one or more API key lists. Please check your .env file.")
+    exit(1)
+
+if not SERPER_API_KEY:
+    print("❌ API Key Error: Missing SERPER_API_KEY. Please add it to your .env file.")
     exit(1)
 
 current_gemini_idx = 0
@@ -86,58 +93,53 @@ def load_or_create_profile(profile_name):
             "stroke_color": "black",
             "caption_y_percentage": 0.60
         },
-        "system_prompt": """
+        "writer_prompt": """
 You are a viral YouTube Shorts, TikTok, and Instagram Reels producer specializing in high-retention storytelling. 
-Create a unique 45-second script based on fascinating facts, macabre history, bizarre science, or intriguing true stories (e.g., death row last meals, historical ironies, survival stories, mysteries).
+Create a unique 45-second script based on fascinating facts, macabre history, bizarre science, or intriguing true stories.
 
 Do NOT use any of these past topics: {history}
 
 🚨 CRITICAL HOOK RULE:
 DO NOT start the script with "Imagine this", "Did you know", or by stating a year/date. 
-The first 3 seconds MUST immediately state the most shocking, high-stakes, or bizarre action of the story to hook the viewer instantly.
+The first 3 seconds MUST immediately state the most shocking, high-stakes, or bizarre action of the story.
 
 🚨 CRITICAL OUTRO / CTA RULE:
-DO NOT add a traditional, separate outro. Do not say "Thanks for watching." The algorithm penalizes this by tanking retention. 
-Instead, weave a rapid Call-To-Action seamlessly into the final punchline of the script. 
-Example: "...leaving the mystery completely unsolved. Follow for more fascinating stories." 
-
-CRITICAL SCRIPT FORMATTING RULE (FOR AI VOICE PACING):
-You MUST format the "script" text to sound natural but keep it clean:
-1. Use simple punctuation like commas (,) and periods (.) strategically to force micro-pauses and natural breathing.
-2. Do NOT use em-dashes (—) or quotation marks (" "). Keep the punctuation basic.
-3. Write out dates and numbers using digits (e.g., "2026" or "100").
+DO NOT add a traditional, separate outro. Instead, weave a rapid Call-To-Action seamlessly into the final punchline. 
 
 CRITICAL VISUAL B-ROLL RULE:
-The 'tags' array MUST contain exactly 16 SINGLE-WORD search terms that match the chronological story beats for Pexels. 
-Do NOT use multi-word phrases. Pexels cannot process them. 
-Always be literal, visual, and highly descriptive.
-
-🚀 VISUAL EFFECTS & DYNAMIC IMAGES:
-You must pick 3 to 5 key words in the script and assign them an effect. The 'trigger_word' MUST exactly match a word spoken in the script.
-- Use "emoji" for generic concepts (e.g., 🍔, 💀).
-- Use "dynamic_image" ONLY for specific, real-world historical figures, places, or famous items that have Wikipedia pages (e.g., "Ted_Bundy" or "Alcatraz_Island"). Provide the exact Wikipedia page title in 'wiki_title'.
-- For 'sound_effect', assume standard files exist like 'pop.mp3', 'swoosh.mp3', or 'ding.mp3'.
+The 'tags' array MUST contain exactly 16 SINGLE-WORD search terms that match the chronological story beats for Pexels.
 
 Output ONLY a JSON object with this exact structure:
 {
   "title": "Internal working title",
   "script": "The pacing-optimized spoken script. Around 110-130 words.",
   "tags": ["word1", "word2", "word3", "word4", "word5", "word6", "word7", "word8", "word9", "word10", "word11", "word12", "word13", "word14", "word15", "word16"],
+  "metadata": { "viral_score": 9.5 }
+}
+""",
+        "editor_prompt": """
+You are a master Video Editor.
+I am going to provide you with the exact, word-by-word timestamps of a voiceover.
+Your job is to strategically pick 1 to 3 moments in the timeline to flash a highly specific dynamic image on screen.
+Choose moments with maximum impact, such as the exact moment a specific historical figure, object, or location is first introduced.
+
+Rules:
+1. Provide the exact 'start' time in seconds corresponding to the word where the image should appear.
+2. Provide a 'search_query' for Google Images. It MUST be highly specific (e.g. "John Wayne Gacy mugshot 1978").
+3. Provide a 'duration' in seconds for how long the image should stay on screen (usually 2.0 to 3.0).
+
+Voiceover Timestamps:
+{timestamps}
+
+Output ONLY a JSON object with this exact structure:
+{
   "effects": [
     {
-      "trigger_word": "burger",
-      "type": "emoji",
-      "value": "🍔",
-      "sound_effect": "pop.mp3"
-    },
-    {
-      "trigger_word": "Gacy",
-      "type": "dynamic_image",
-      "wiki_title": "John_Wayne_Gacy",
-      "sound_effect": "camera_shutter.mp3"
+      "start": 1.45,
+      "search_query": "Mike the Headless Chicken historical photo",
+      "duration": 2.5
     }
-  ],
-  "metadata": { ... }
+  ]
 }
 """
     }
@@ -198,8 +200,8 @@ def generate_topic_script_tags(profile, history, script_cache_file, is_batching)
         with open(script_cache_file, "r", encoding="utf-8") as f:
             return json.load(f)
 
-    print("🧠 Brainstorming unique script and generating viral properties...")
-    prompt = profile["system_prompt"].replace("{history}", json.dumps(history))
+    print("🧠 [STAGE 1] Brainstorming unique script and generating viral properties...")
+    prompt = profile["writer_prompt"].replace("{history}", json.dumps(history))
     
     response = generate_with_fallback(
         contents=prompt,
@@ -218,18 +220,16 @@ def generate_topic_script_tags(profile, history, script_cache_file, is_batching)
         
     return data
 
-def generate_audio_and_captions(script_text, profile, audio_path, timestamps_cache_file, effects_cache_file, is_batching, effects=None):
+def generate_audio_and_captions(script_text, profile, audio_path, timestamps_cache_file, is_batching):
     global current_eleven_idx
     
-    if DEV_MODE and not is_batching and os.path.exists(audio_path) and os.path.exists(timestamps_cache_file) and os.path.exists(effects_cache_file):
-        print("♻️ DEV MODE: Loading audio, timestamps, and matched effects from cache...")
+    if DEV_MODE and not is_batching and os.path.exists(audio_path) and os.path.exists(timestamps_cache_file):
+        print("♻️ DEV MODE: Loading audio and timestamps from cache...")
         with open(timestamps_cache_file, "r", encoding="utf-8") as f:
             subs = json.load(f)
-        with open(effects_cache_file, "r", encoding="utf-8") as f:
-            matched_effects_timeline = json.load(f)
-        return audio_path, subs, matched_effects_timeline
+        return audio_path, subs
 
-    print("🎙️ Generating ElevenLabs voiceover...")
+    print("🎙️ [STAGE 2] Generating ElevenLabs voiceover and extracting timeline...")
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{profile['voice_id']}/with-timestamps"
     data = {
         "text": script_text,
@@ -276,74 +276,122 @@ def generate_audio_and_captions(script_text, profile, audio_path, timestamps_cac
         if current_word: words.append((word_start, ends[-1], current_word))
 
         subs = []
-        matched_effects_timeline = []
-        
         for w_start, w_end, word in words:
             clean_word = re.sub(r'[,—\-"“”\.]', '', word).strip()
             if clean_word: 
                 subs.append([w_start, w_end, clean_word])
-                
-                if effects:
-                    for effect in effects:
-                        if effect.get('trigger_word', '').lower() == clean_word.lower():
-                            matched_effects_timeline.append({
-                                "start": w_start,
-                                "type": effect.get('type', 'emoji'),
-                                "value": effect.get('value', effect.get('wiki_title', '')),
-                                "sound": effect.get('sound_effect')
-                            })
-                            print(f"  ⚡ Trigger '{clean_word}' matched! Synchronized for render.")
 
         with open(timestamps_cache_file, "w", encoding="utf-8") as f:
             json.dump(subs, f, indent=4)
             
-        with open(effects_cache_file, "w", encoding="utf-8") as f:
-            json.dump(matched_effects_timeline, f, indent=4)
-            
-        return audio_path, subs, matched_effects_timeline
+        return audio_path, subs
 
-# --- PHASE 3 UPDATE: Wikipedia Image Fetcher with User-Agent Fix ---
-def fetch_wikipedia_image(wiki_title, output_dir):
-    print(f"🔍 Searching Wikipedia for image of: {wiki_title}")
-    url = f"https://en.wikipedia.org/w/api.php?action=query&prop=pageimages&format=json&piprop=original&titles={wiki_title}"
+def generate_editor_effects(subs_data, profile, effects_cache_file, is_batching):
+    if DEV_MODE and not is_batching and os.path.exists(effects_cache_file):
+        print("♻️ DEV MODE: Loading editor effects from cache...")
+        with open(effects_cache_file, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    print("🎬 [STAGE 3] Sending precise timeline to AI Director to plan visual impacts...")
     
-    # Wikimedia requires a User-Agent header for API access
+    # Format the subtitle data compactly to save tokens when sending to the LLM
+    compact_timeline = [{"start": w[0], "word": w[2]} for w in subs_data]
+    timeline_str = json.dumps(compact_timeline)
+    
+    prompt = profile["editor_prompt"].replace("{timestamps}", timeline_str)
+    
+    response = generate_with_fallback(
+        contents=prompt,
+        model_queue=ROUTING_LOGIC["heavy_reasoning"],
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            temperature=0.3 # Lower temperature for more exact timestamp matching
+        )
+    )
+    
+    data = json.loads(response.text)
+    effects = data.get("effects", [])
+    
+    for effect in effects:
+        print(f"  ⚡ AI Editor queued image '{effect.get('search_query')}' at {effect.get('start')}s")
+    
+    with open(effects_cache_file, "w", encoding="utf-8") as f:
+        json.dump(effects, f, indent=4)
+        
+    return effects
+
+# --- PHASE 3: SERPER API IMAGE FETCHER ---
+def fetch_serper_image(search_query, output_dir):
+    print(f"🔍 Searching Google Images (via Serper) for: '{search_query}'")
+    url = "https://google.serper.dev/images"
+    payload = json.dumps({
+        "q": search_query
+    })
     headers = {
-        "User-Agent": "ViralVideoGenerator/1.0 (Python/Requests)"
+        'X-API-KEY': SERPER_API_KEY,
+        'Content-Type': 'application/json'
     }
     
     try:
-        resp = requests.get(url, headers=headers)
-        resp.raise_for_status() # Catch HTTP errors like 403 or 404 immediately
+        response = requests.post(url, headers=headers, data=payload)
+        response.raise_for_status() 
+        data = response.json()
         
-        data = resp.json()
-        pages = data.get("query", {}).get("pages", {})
+        images = data.get("images", [])
+        if not images:
+            print(f"  ⚠️ No images found on Google for '{search_query}'.")
+            return None
+            
+        safe_name = "".join([c for c in search_query if c.isalnum()]).strip()
+        filename = f"serper_{safe_name}.jpg"
+        filepath = os.path.join(output_dir, filename)
         
-        for page_id, page_data in pages.items():
-            # If page_id is -1, the Wikipedia page doesn't exist
-            if str(page_id) == "-1":
-                print(f"  ⚠️ Wikipedia page '{wiki_title}' not found.")
-                return None
+        # Check cache before doing any network requests
+        if os.path.exists(filepath):
+             print(f"  ✅ Secured dynamic image (Cached): {filename}")
+             return filepath
+
+        # NEW FALLBACK LOOP: Iterate through Google Image results until one works
+        for img_data_entry in images:
+            image_url = img_data_entry.get("imageUrl")
+            if not image_url:
+                continue
                 
-            if "original" in page_data:
-                image_url = page_data["original"]["source"]
-                ext = image_url.split('.')[-1][:4] 
-                filename = f"wiki_{wiki_title}.{ext}"
-                filepath = os.path.join(output_dir, filename)
+            try:
+                # Upgraded User-Agent to bypass basic bot blockers (403/429 errors)
+                browser_headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                }
                 
-                # Check for cached version
-                if not os.path.exists(filepath):
-                    img_data = requests.get(image_url, headers=headers).content
-                    with open(filepath, 'wb') as f:
-                        f.write(img_data)
+                img_resp = requests.get(image_url, headers=browser_headers, timeout=10)
+                img_resp.raise_for_status() # Will trigger except block on 429, 404, etc.
                 
+                # Use Pillow to read the bytes and enforce a standard RGB JPEG format
+                img_bytes = io.BytesIO(img_resp.content)
+                img = Image.open(img_bytes)
+                
+                if img.mode in ("RGBA", "P") or img.mode != "RGB":
+                    img = img.convert("RGB")
+                    
+                img.save(filepath, "JPEG")
                 print(f"  ✅ Secured dynamic image: {filename}")
-                return filepath
+                return filepath # Success! Exit the loop.
                 
-        print(f"  ⚠️ No Wikipedia main image found for {wiki_title}.")
+            except requests.exceptions.RequestException as e:
+                print(f"  ⚠️ Blocked or failed to download from {image_url[:40]}... Trying next image...")
+                continue
+            except UnidentifiedImageError:
+                print(f"  ⚠️ Downloaded file is not a valid image format. Trying next image...")
+                continue
+            except Exception as e:
+                print(f"  ⚠️ Unexpected error processing image. Trying next...")
+                continue
+        
+        print(f"  ❌ Failed to download ANY valid images for '{search_query}' after trying all results.")
         return None
+        
     except Exception as e:
-        print(f"  ⚠️ Failed to fetch Wikipedia image for {wiki_title}: {e}")
+        print(f"  ⚠️ Serper API request failed for '{search_query}': {e}")
         return None
 
 def get_pexels_data(url):
@@ -466,23 +514,13 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_e
         
     final_visual = concatenate_videoclips(clips, method="compose")
     
-    # --- MIX SOUND EFFECTS ---
-    sfx_clips = []
-    for effect in matched_effects:
-        sfx_file = effect.get('sound')
-        if sfx_file:
-            sfx_path = os.path.join("sfx", sfx_file)
-            if os.path.exists(sfx_path):
-                sfx = AudioFileClip(sfx_path).set_start(effect['start'])
-                sfx_clips.append(sfx)
-    
     bg_clip = None
     if bg_music_path and os.path.exists(bg_music_path):
         bg_clip = AudioFileClip(bg_music_path).fx(afx.volumex, bg_vol)
         bg_clip = afx.audio_loop(bg_clip, duration=audio_duration)
-        final_audio = CompositeAudioClip([audio, bg_clip] + sfx_clips)
+        final_audio = CompositeAudioClip([audio, bg_clip])
     else:
-        final_audio = CompositeAudioClip([audio] + sfx_clips) if sfx_clips else audio
+        final_audio = audio
         
     final_visual = final_visual.set_audio(final_audio).subclip(0, audio_duration)
     
@@ -516,28 +554,34 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_e
         word_clip = CompositeVideoClip([txt_shadow, txt_stroke, txt_fill], size=(box_w, box_h)).resize(snappy_pop).set_position(('center', caption_y_pos)).set_start(start).set_end(end)
         text_clips.append(word_clip)
 
-    # --- PHASE 3: VISUAL EFFECTS (EMOJIS & DYNAMIC IMAGES) ---
+    # --- PHASE 3: VISUAL EFFECTS (DYNAMIC IMAGES) ---
     effect_clips = []
     for effect in matched_effects:
-        if effect['type'] == 'emoji' and effect['value']:
-            fx_clip = TextClip(effect['value'], font="Segoe-UI-Emoji", fontsize=150 if RENDER_QUALITY == "test" else 300, color='white')
-            fx_clip = fx_clip.set_position(('center', target_h * 0.35)).set_start(effect['start']).set_duration(1.5)
-            fx_clip = fx_clip.resize(lambda t: min(1.0, 0.5 + 2*t) if t < 0.25 else 1.0)
-            effect_clips.append(fx_clip)
-            
-        elif effect['type'] == 'dynamic_image' and effect.get('local_path'):
-            if os.path.exists(effect['local_path']):
+        if effect.get('local_path') and os.path.exists(effect['local_path']):
+            try:
                 fx_clip = ImageClip(effect['local_path'])
                 
-                # Scale the image based on render target size (e.g., 60% of width)
-                target_img_width = int(target_w * 0.6)
+                # Robustly scale the image based on render target size
+                target_img_width = int(target_w * 0.7)
                 fx_clip = fx_clip.resize(width=target_img_width)
                 
-                fx_clip = fx_clip.set_position(('center', target_h * 0.3)).set_start(effect['start']).set_duration(2.0)
-                fx_clip = fx_clip.resize(lambda t: min(1.0, 0.5 + 2*t) if t < 0.25 else 1.0)
+                start_time = float(effect.get('start', 0.0))
+                duration = float(effect.get('duration', 2.0))
+                
+                # Apply native MoviePy fade transitions instead of lambda resizing
+                fx_clip = (fx_clip
+                           .set_position(('center', target_h * 0.25))
+                           .set_start(start_time)
+                           .set_duration(duration)
+                           .crossfadein(0.3)
+                           .crossfadeout(0.3))
+                
                 effect_clips.append(fx_clip)
+            except Exception as e:
+                print(f"  ⚠️ Skipping image {effect.get('local_path')} due to render error: {e}")
         
-    final_video = CompositeVideoClip([final_visual] + text_clips + effect_clips)
+    # --- FIX: Swapped effect_clips and text_clips to ensure text renders on top ---
+    final_video = CompositeVideoClip([final_visual] + effect_clips + text_clips)
     
     safe_title = "".join([c for c in final_title if c.isalpha() or c.isdigit() or c==' ']).rstrip()
     base_filename = safe_title.replace(' ', '_')
@@ -570,8 +614,7 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_e
 def cleanup_workspace(assets_dir, bg_music_filename):
     print("🧹 Running surgical cleanup (Leaving history and bg_music intact)...")
     for file in os.listdir(assets_dir):
-        # PHASE 3: Exclude Wikipedia images from being deleted!
-        if file.startswith("wiki_"):
+        if file.startswith("serper_"):
             continue
             
         if file.endswith(".mp4") or file.endswith(".jpg") or file.endswith(".png") or file == "voiceover.mp3" or "cache" in file:
@@ -613,6 +656,7 @@ def main():
         is_batching = args.count > 1 
         history = load_history(history_file)
         
+        # STAGE 1: Writer
         gemini_data = generate_topic_script_tags(profile, history, script_cache, is_batching)
         title = gemini_data['title']
         
@@ -621,22 +665,25 @@ def main():
         video_out_dir = os.path.join(base_output_dir, base_filename)
         os.makedirs(video_out_dir, exist_ok=True)
         
-        script_effects = gemini_data.get('effects', [])
-        
-        audio_path, subs_data, matched_effects = generate_audio_and_captions(
-            gemini_data['script'], profile, os.path.join(assets_dir, "voiceover.mp3"), timestamps_cache, effects_cache, is_batching, effects=script_effects
+        # STAGE 2: Audio & Timeline Extraction
+        audio_path, subs_data = generate_audio_and_captions(
+            gemini_data['script'], profile, os.path.join(assets_dir, "voiceover.mp3"), timestamps_cache, is_batching
         )
         
-        # --- PHASE 3: Download Dynamic Images BEFORE rendering ---
+        # STAGE 3: Director / Video Editor AI
+        matched_effects = generate_editor_effects(subs_data, profile, effects_cache, is_batching)
+        
+        # STAGE 4: Resource Sourcing
         for effect in matched_effects:
-            if effect['type'] == 'dynamic_image' and effect.get('value'):
-                local_path = fetch_wikipedia_image(effect['value'], assets_dir)
+            if effect.get('search_query'):
+                local_path = fetch_serper_image(effect['search_query'], assets_dir)
                 if local_path:
                     effect['local_path'] = local_path
         
         bg_music_path = local_bg_music if os.path.exists(local_bg_music) else None
         valid_videos = download_b_roll(gemini_data['tags'], assets_dir, is_batching)
         
+        # STAGE 5: Rendering
         _, returned_base_filename = assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_effects, title, video_out_dir, profile)
         
         if 'metadata' in gemini_data:
