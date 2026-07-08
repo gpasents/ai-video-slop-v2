@@ -117,6 +117,23 @@ Output ONLY a JSON object with this exact structure:
   "metadata": { "viral_score": 9.5 }
 }
 """,
+        "audio_director_prompt": """
+You are an expert Audio Director specializing in Text-to-Speech synthesis.
+Your goal is to make the script sound FAST, URGENT, and CONTINUOUS with NO UNNECESSARY PAUSES.
+
+Rules for formatting:
+1. REMOVE ALL periods (.), ellipses (...), and line breaks. Replace them with commas (,) or spaces so the AI doesn't take long pauses.
+2. CAPITALIZE single words to force the AI to stress them heavily (e.g., "He was ENTIRELY alone").
+3. DO NOT change the actual words, add new words, or remove words. ONLY modify capitalization and punctuation to make it sound like a fast-paced, breathless storyteller.
+
+Raw Script:
+{script}
+
+Output ONLY a JSON object with this exact structure:
+{
+  "directed_script": "The continuous, fast-paced script here."
+}
+""",
         "editor_prompt": """
 You are a master Video Editor.
 I am going to provide you with the exact, word-by-word timestamps of a voiceover.
@@ -220,6 +237,31 @@ def generate_topic_script_tags(profile, history, script_cache_file, is_batching)
         
     return data
 
+def direct_audio_script(raw_script, profile, audio_dir_cache_file, is_batching):
+    if DEV_MODE and not is_batching and os.path.exists(audio_dir_cache_file):
+        print("♻️ DEV MODE: Loading directed audio script from cache...")
+        with open(audio_dir_cache_file, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    print("🎧 [STAGE 1.5] Audio Director is injecting pacing and emotion cues for ElevenLabs...")
+    prompt = profile["audio_director_prompt"].replace("{script}", raw_script)
+    
+    response = generate_with_fallback(
+        contents=prompt,
+        model_queue=ROUTING_LOGIC["heavy_reasoning"],
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            temperature=0.4
+        )
+    )
+    
+    data = json.loads(response.text)
+    
+    with open(audio_dir_cache_file, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4)
+        
+    return data
+
 def generate_audio_and_captions(script_text, profile, audio_path, timestamps_cache_file, is_batching):
     global current_eleven_idx
     
@@ -264,22 +306,31 @@ def generate_audio_and_captions(script_text, profile, audio_path, timestamps_cac
         starts = response_data["alignment"]["character_start_times_seconds"]
         ends = response_data["alignment"]["character_end_times_seconds"]
 
+        # ---------------------------------------------------------
+        # NEW ROBUST WORD EXTRACTION LOGIC
+        # ---------------------------------------------------------
         words, current_word, word_start = [], "", None
         for i, char in enumerate(chars):
-            if char == " ":
+            # Split on ANY character that isn't a letter/number or an apostrophe
+            if not char.isalnum() and char not in ["'", "’"]:
                 if current_word:
-                    words.append((word_start, ends[i-1], current_word))
+                    # Guard index to prevent out-of-bounds on rapid sequences
+                    end_idx = i - 1 if i > 0 else 0
+                    words.append((word_start, ends[end_idx], current_word))
                     current_word, word_start = "", None
             else:
                 if current_word == "": word_start = starts[i]
                 current_word += char
-        if current_word: words.append((word_start, ends[-1], current_word))
+                
+        # Append the final word if the string ends without punctuation
+        if current_word: 
+            words.append((word_start, ends[-1], current_word))
 
+        # Words are already perfectly clean from the loop above!
         subs = []
         for w_start, w_end, word in words:
-            clean_word = re.sub(r'[,—\-"“”\.]', '', word).strip()
-            if clean_word: 
-                subs.append([w_start, w_end, clean_word])
+            if word: 
+                subs.append([w_start, w_end, word])
 
         with open(timestamps_cache_file, "w", encoding="utf-8") as f:
             json.dump(subs, f, indent=4)
@@ -580,7 +631,6 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_e
             except Exception as e:
                 print(f"  ⚠️ Skipping image {effect.get('local_path')} due to render error: {e}")
         
-    # --- FIX: Swapped effect_clips and text_clips to ensure text renders on top ---
     final_video = CompositeVideoClip([final_visual] + effect_clips + text_clips)
     
     safe_title = "".join([c for c in final_title if c.isalpha() or c.isdigit() or c==' ']).rstrip()
@@ -640,6 +690,7 @@ def main():
     base_output_dir = f"output_{args.profile}"
     history_file = os.path.join(assets_dir, "history.json")
     script_cache = os.path.join(assets_dir, "script_cache.json")
+    audio_dir_cache = os.path.join(assets_dir, "audio_director_cache.json") 
     timestamps_cache = os.path.join(assets_dir, "timestamps_cache.json")
     effects_cache = os.path.join(assets_dir, "effects_cache.json")
     local_bg_music = os.path.join(assets_dir, profile["bg_music_file"])
@@ -665,9 +716,13 @@ def main():
         video_out_dir = os.path.join(base_output_dir, base_filename)
         os.makedirs(video_out_dir, exist_ok=True)
         
+        # STAGE 1.5: Audio Director 
+        directed_script_data = direct_audio_script(gemini_data['script'], profile, audio_dir_cache, is_batching)
+        final_spoken_script = directed_script_data.get('directed_script', gemini_data['script'])
+
         # STAGE 2: Audio & Timeline Extraction
         audio_path, subs_data = generate_audio_and_captions(
-            gemini_data['script'], profile, os.path.join(assets_dir, "voiceover.mp3"), timestamps_cache, is_batching
+            final_spoken_script, profile, os.path.join(assets_dir, "voiceover.mp3"), timestamps_cache, is_batching
         )
         
         # STAGE 3: Director / Video Editor AI
