@@ -9,6 +9,7 @@ import argparse
 import random
 import math
 import io
+import hashlib
 from dotenv import load_dotenv
 from PIL import Image, UnidentifiedImageError
 
@@ -44,7 +45,8 @@ change_settings({"IMAGEMAGICK_BINARY": r"C:\Program Files\ImageMagick-7.1.2-Q16-
 # MODEL ROUTING & API KEY CYCLING CONFIGURATION
 # ==============================================================================
 ROUTING_LOGIC = {
-    "heavy_reasoning": ["gemini-1.5-pro","gemini-3.5-flash","gemini-2.5-flash","gemini-3.1-flash-lite", "gemini-2.0-flash", "gemini-1.5-flash"]
+    "heavy_reasoning": ["gemini-3.1-flash-lite","gemini-3.5-flash","gemini-2.5-flash","gemini-2.5-flash-lite","gemini-3-flash"],
+    "vision_tasks": ["gemini-3.1-flash-lite","gemini-3.5-flash","gemini-2.5-flash","gemini-2.5-flash-lite","gemini-3-flash"]
 }
 
 # Load keys as lists. Use commas in your .env file
@@ -64,6 +66,44 @@ if not SERPER_API_KEY:
 current_gemini_idx = 0
 current_eleven_idx = 0
 current_pexels_idx = 0
+
+# ==============================================================================
+# OPTIMIZED WATERFALL ROUTER (WITH PROGRESSIVE BACKOFF & SMART BREAKS)
+# ==============================================================================
+
+def generate_with_fallback(contents, model_queue, config=None):
+    global current_gemini_idx
+    attempts = 0
+    max_attempts = len(GEMINI_KEYS) * 3  # Cycle through all keys up to 3 times if needed
+    backoff = 2
+    
+    while attempts < max_attempts:
+        current_key = GEMINI_KEYS[current_gemini_idx]
+        temp_client = genai.Client(api_key=current_key)
+        
+        for model_name in model_queue:
+            try:
+                response = temp_client.models.generate_content(
+                    model=model_name, contents=contents, config=config
+                )
+                return response
+            except APIError as e:
+                err_str = str(e).lower()
+                # Catch rate limits, quota limits, or transient burst blocks
+                if any(k in err_str for k in ["429", "quota", "exhausted", "limit"]):
+                    print(f"⚠️ Key Index [{current_gemini_idx}] rate-limited on {model_name}. Cycling to next key...")
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2, 15) # Cap backoff at 15 seconds
+                    break  # Break out of the model loop immediately to shift keys
+                
+                print(f"⚠️ Model {model_name} failed on key index [{current_gemini_idx}]: {e}")
+                time.sleep(1)
+                continue
+                
+        current_gemini_idx = (current_gemini_idx + 1) % len(GEMINI_KEYS)
+        attempts += 1
+        
+    raise Exception("❌ CRITICAL: Gemini API limits reached on all available keys and models after multiple retries.")
 
 # ==============================================================================
 # PROFILE MANAGEMENT (PRODUCTION VIRAL METADATA)
@@ -158,7 +198,7 @@ Output ONLY a JSON object with this exact structure:
         "editor_prompt": """
 You are a master Video Editor.
 I am going to provide you with the exact, word-by-word timestamps of a voiceover.
-Your job is to strategically pick 1 to 3 moments in the timeline to flash a highly specific dynamic image on screen.
+Your job is to strategically pick a dynamic amount of moments (typically 4 to 8, depending on the pacing and density of the script) in the timeline to flash a highly specific dynamic image on screen.
 Choose moments with maximum impact, such as the exact moment a specific historical figure, object, or location is first introduced.
 
 Rules:
@@ -186,35 +226,6 @@ Output ONLY a JSON object with this exact structure:
         json.dump(default_profile, f, indent=4)
         
     return default_profile
-
-# ==============================================================================
-# WATERFALL ROUTER
-# ==============================================================================
-
-def generate_with_fallback(contents, model_queue, config=None):
-    global current_gemini_idx
-    start_idx = current_gemini_idx
-    
-    while True:
-        current_key = GEMINI_KEYS[current_gemini_idx]
-        temp_client = genai.Client(api_key=current_key)
-        
-        for model_name in model_queue:
-            try:
-                response = temp_client.models.generate_content(
-                    model=model_name, contents=contents, config=config
-                )
-                return response
-            except APIError as e:
-                err_str = str(e).lower()
-                if any(k in err_str for k in ["429", "503", "500", "404", "not_found", "quota", "exhausted"]):
-                    time.sleep(1) 
-                    continue
-                print(f"⚠️ Model {model_name} failed: {e}")
-                
-        current_gemini_idx = (current_gemini_idx + 1) % len(GEMINI_KEYS)
-        if current_gemini_idx == start_idx:
-            raise Exception("❌ Gemini API limits reached or failed on all available keys and models.")
 
 # ==============================================================================
 # CORE WORKFLOW FUNCTIONS
@@ -306,15 +317,12 @@ def generate_audio_and_captions(script_text, profile, audio_path, timestamps_cac
         }
     }
     
-    # --- DEBUGGING FILE CREATION ---
     debug_path = os.path.join(os.path.dirname(audio_path), "elevenlabs_debug_request.json")
     try:
         with open(debug_path, "w", encoding="utf-8") as f:
             json.dump({"url": url, "payload": data}, f, indent=4)
-        print(f"   🐛 ElevenLabs request payload saved for debugging to: {debug_path}")
     except Exception as e:
         print(f"   ⚠️ Could not save ElevenLabs debug file: {e}")
-    # -------------------------------
     
     start_idx = current_eleven_idx
     while True:
@@ -338,15 +346,10 @@ def generate_audio_and_captions(script_text, profile, audio_path, timestamps_cac
         starts = response_data["alignment"]["character_start_times_seconds"]
         ends = response_data["alignment"]["character_end_times_seconds"]
 
-        # ---------------------------------------------------------
-        # NEW ROBUST WORD EXTRACTION LOGIC
-        # ---------------------------------------------------------
         words, current_word, word_start = [], "", None
         for i, char in enumerate(chars):
-            # Split on ANY character that isn't a letter/number or an apostrophe
             if not char.isalnum() and char not in ["'", "’"]:
                 if current_word:
-                    # Guard index to prevent out-of-bounds on rapid sequences
                     end_idx = i - 1 if i > 0 else 0
                     words.append((word_start, ends[end_idx], current_word))
                     current_word, word_start = "", None
@@ -354,11 +357,9 @@ def generate_audio_and_captions(script_text, profile, audio_path, timestamps_cac
                 if current_word == "": word_start = starts[i]
                 current_word += char
                 
-        # Append the final word if the string ends without punctuation
         if current_word: 
             words.append((word_start, ends[-1], current_word))
 
-        # Words are already perfectly clean from the loop above!
         subs = []
         for w_start, w_end, word in words:
             if word: 
@@ -377,7 +378,6 @@ def generate_editor_effects(subs_data, profile, effects_cache_file, is_batching)
 
     print("🎬 [STAGE 3] Sending precise timeline to AI Director to plan visual impacts...")
     
-    # Format the subtitle data compactly to save tokens when sending to the LLM
     compact_timeline = [{"start": w[0], "word": w[2]} for w in subs_data]
     timeline_str = json.dumps(compact_timeline)
     
@@ -388,7 +388,7 @@ def generate_editor_effects(subs_data, profile, effects_cache_file, is_batching)
         model_queue=ROUTING_LOGIC["heavy_reasoning"],
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
-            temperature=0.3 # Lower temperature for more exact timestamp matching
+            temperature=0.4
         )
     )
     
@@ -403,13 +403,14 @@ def generate_editor_effects(subs_data, profile, effects_cache_file, is_batching)
         
     return effects
 
-# --- PHASE 3: SERPER API IMAGE FETCHER ---
-def fetch_serper_image(search_query, output_dir):
+# --- PHASE 4: SERPER API IMAGE FETCHER ---
+def fetch_serper_image(search_query, output_dir, ignored_urls=None):
+    if ignored_urls is None:
+        ignored_urls = []
+        
     print(f"🔍 Searching Google Images (via Serper) for: '{search_query}'")
     url = "https://google.serper.dev/images"
-    payload = json.dumps({
-        "q": search_query
-    })
+    payload = json.dumps({"q": search_query})
     headers = {
         'X-API-KEY': SERPER_API_KEY,
         'Content-Type': 'application/json'
@@ -423,33 +424,31 @@ def fetch_serper_image(search_query, output_dir):
         images = data.get("images", [])
         if not images:
             print(f"  ⚠️ No images found on Google for '{search_query}'.")
-            return None
+            return None, None
             
         safe_name = "".join([c for c in search_query if c.isalnum()]).strip()
-        filename = f"serper_{safe_name}.jpg"
-        filepath = os.path.join(output_dir, filename)
-        
-        # Check cache before doing any network requests
-        if os.path.exists(filepath):
-             print(f"  ✅ Secured dynamic image (Cached): {filename}")
-             return filepath
 
-        # NEW FALLBACK LOOP: Iterate through Google Image results until one works
         for img_data_entry in images:
             image_url = img_data_entry.get("imageUrl")
-            if not image_url:
+            if not image_url or image_url in ignored_urls:
                 continue
                 
+            url_hash = hashlib.md5(image_url.encode('utf-8')).hexdigest()[:8]
+            filename = f"serper_{safe_name}_{url_hash}.jpg"
+            filepath = os.path.join(output_dir, filename)
+            
+            if os.path.exists(filepath):
+                 print(f"  ✅ Secured dynamic image (Cached): {filename}")
+                 return filepath, image_url
+
             try:
-                # Upgraded User-Agent to bypass basic bot blockers (403/429 errors)
                 browser_headers = {
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                 }
                 
                 img_resp = requests.get(image_url, headers=browser_headers, timeout=10)
-                img_resp.raise_for_status() # Will trigger except block on 429, 404, etc.
+                img_resp.raise_for_status() 
                 
-                # Use Pillow to read the bytes and enforce a standard RGB JPEG format
                 img_bytes = io.BytesIO(img_resp.content)
                 img = Image.open(img_bytes)
                 
@@ -458,24 +457,106 @@ def fetch_serper_image(search_query, output_dir):
                     
                 img.save(filepath, "JPEG")
                 print(f"  ✅ Secured dynamic image: {filename}")
-                return filepath # Success! Exit the loop.
+                return filepath, image_url
                 
-            except requests.exceptions.RequestException as e:
-                print(f"  ⚠️ Blocked or failed to download from {image_url[:40]}... Trying next image...")
+            except requests.exceptions.RequestException:
                 continue
             except UnidentifiedImageError:
-                print(f"  ⚠️ Downloaded file is not a valid image format. Trying next image...")
                 continue
-            except Exception as e:
-                print(f"  ⚠️ Unexpected error processing image. Trying next...")
+            except Exception:
                 continue
         
         print(f"  ❌ Failed to download ANY valid images for '{search_query}' after trying all results.")
-        return None
+        return None, None
         
     except Exception as e:
         print(f"  ⚠️ Serper API request failed for '{search_query}': {e}")
-        return None
+        return None, None
+
+# ==============================================================================
+# OPTIMIZED STAGE 4.5: AI DEDUPLICATION WITH LOCAL IMAGE COMPRESSION
+# ==============================================================================
+def deduplicate_and_replace_images(matched_effects, assets_dir):
+    valid_effects = [e for e in matched_effects if e.get('local_path') and os.path.exists(e['local_path'])]
+    if len(valid_effects) < 2:
+        return matched_effects
+
+    print("🧠 [STAGE 4.5] Downscaling image data and analyzing visual duplicates with Gemini...")
+    
+    prompt = (
+        "You are an expert image analyst. Identify if any of these images are practically identical to an earlier image in the sequence "
+        "(e.g., same source photo, even if it is cropped, resized, or color-shifted). "
+        "Return ONLY a JSON object containing a list of the 0-based indices of the images that are duplicates and should be replaced. "
+        "Strict format: {\"duplicates\": [2, 4]}"
+    )
+    
+    contents = [prompt]
+    
+    for i, effect in enumerate(valid_effects):
+        try:
+            # ⚡ OPTIMIZATION: Downscale image locally to save up to 90% of token usage
+            img = Image.open(effect['local_path'])
+            img.thumbnail((512, 512)) # 512px max on longest side keeps aspect ratio and details intact
+            
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+                
+            img_byte_arr = io.BytesIO()
+            img.save(img_byte_arr, format='JPEG', quality=75)
+            img_bytes = img_byte_arr.getvalue()
+            
+            contents.append(f"Image {i}:")
+            contents.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
+        except Exception as img_err:
+            print(f"  ⚠️ Local compression failed for index {i}: {img_err}. Processing raw fallback...")
+            with open(effect['local_path'], "rb") as f:
+                img_bytes = f.read()
+            contents.append(f"Image {i}:")
+            contents.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
+        
+    try:
+        response = generate_with_fallback(
+            contents=contents,
+            model_queue=ROUTING_LOGIC["vision_tasks"],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json", 
+                temperature=0.1
+            )
+        )
+        data = json.loads(response.text)
+        dupes = data.get("duplicates", [])
+        
+        if not dupes:
+            print("  ✅ Gemini confirms all images are visually distinct!")
+            return matched_effects
+            
+        print(f"  ⚠️ Gemini flagged visual duplicates at indices: {dupes}. Swapping results...")
+        
+        for idx in dupes:
+            if isinstance(idx, int) and 0 <= idx < len(valid_effects):
+                bad_effect = valid_effects[idx]
+                print(f"  🔄 Re-fetching clean source image for '{bad_effect['search_query']}'...")
+                
+                new_path, new_url = fetch_serper_image(
+                    bad_effect['search_query'], 
+                    assets_dir, 
+                    ignored_urls=bad_effect.get('ignored_urls', [])
+                )
+                
+                if new_path:
+                    for effect in matched_effects:
+                        if effect == bad_effect:
+                            effect['local_path'] = new_path
+                            effect['source_url'] = new_url
+                            if new_url: effect['ignored_urls'].append(new_url)
+                            break
+                            
+        return matched_effects
+
+    except Exception as e:
+        print(f"  ⚠️ AI Deduplication skipped (Transient API/Quota issue): {e}. Proceeding safe.")
+        return matched_effects
+
 
 def get_pexels_data(url):
     global current_pexels_idx
@@ -542,7 +623,7 @@ def download_b_roll(tags, assets_dir, is_batching):
                     slot_filled = True
                     break
                         
-            except Exception as e:
+            except Exception:
                 pass
                 
         if not slot_filled:
@@ -637,21 +718,19 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_e
         word_clip = CompositeVideoClip([txt_shadow, txt_stroke, txt_fill], size=(box_w, box_h)).resize(snappy_pop).set_position(('center', caption_y_pos)).set_start(start).set_end(end)
         text_clips.append(word_clip)
 
-    # --- PHASE 3: VISUAL EFFECTS (DYNAMIC IMAGES) ---
+    # --- EFFECTS LAYERING ---
     effect_clips = []
     for effect in matched_effects:
         if effect.get('local_path') and os.path.exists(effect['local_path']):
             try:
                 fx_clip = ImageClip(effect['local_path'])
                 
-                # Robustly scale the image based on render target size
                 target_img_width = int(target_w * 0.7)
                 fx_clip = fx_clip.resize(width=target_img_width)
                 
                 start_time = float(effect.get('start', 0.0))
                 duration = float(effect.get('duration', 2.0))
                 
-                # Apply native MoviePy fade transitions instead of lambda resizing
                 fx_clip = (fx_clip
                            .set_position(('center', target_h * 0.25))
                            .set_start(start_time)
@@ -760,12 +839,17 @@ def main():
         # STAGE 3: Director / Video Editor AI
         matched_effects = generate_editor_effects(subs_data, profile, effects_cache, is_batching)
         
-        # STAGE 4: Resource Sourcing
+        # STAGE 4: Initial Resource Sourcing
         for effect in matched_effects:
             if effect.get('search_query'):
-                local_path = fetch_serper_image(effect['search_query'], assets_dir)
+                local_path, source_url = fetch_serper_image(effect['search_query'], assets_dir)
                 if local_path:
                     effect['local_path'] = local_path
+                    effect['source_url'] = source_url
+                    effect['ignored_urls'] = [source_url] if source_url else []
+        
+        # STAGE 4.5: Optimized AI Deduplication
+        matched_effects = deduplicate_and_replace_images(matched_effects, assets_dir)
         
         bg_music_path = local_bg_music if os.path.exists(local_bg_music) else None
         valid_videos = download_b_roll(gemini_data['tags'], assets_dir, is_batching)
