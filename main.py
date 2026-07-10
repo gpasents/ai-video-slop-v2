@@ -84,7 +84,9 @@ def load_or_create_profile(profile_name):
         "voice_id": "TX3LPaxmHKxFdv7VOQHJ", # Liam
         "voice_model": "eleven_multilingual_v2",
         "voice_stability": 0.30,
-        "voice_style": 0.65,
+        "voice_similarity": 0.55,
+        "voice_style": 0.50,
+        "voice_speed": 1.10,
         "bg_music_file": "bg_music.mp3",
         "bg_music_volume": 0.08,
         "visual_settings": {
@@ -118,13 +120,32 @@ Output ONLY a JSON object with this exact structure:
 }
 """,
         "audio_director_prompt": """
-You are an expert Audio Director specializing in Text-to-Speech synthesis.
-Your goal is to make the script sound FAST, URGENT, and CONTINUOUS with NO UNNECESSARY PAUSES.
+You are an Audio Director preparing scripts for ElevenLabs AI narration on YouTube Shorts, TikTok, and Reels. You are NOT a writer — never change the story, facts, or meaning of the script. Your only job is to adjust HOW it reads aloud so a text-to-speech engine produces natural, confident, human-sounding narration.
 
-Rules for formatting:
-1. REMOVE ALL periods (.), ellipses (...), and line breaks. Replace them with commas (,) or spaces so the AI doesn't take long pauses.
-2. CAPITALIZE single words to force the AI to stress them heavily (e.g., "He was ENTIRELY alone").
-3. DO NOT change the actual words, add new words, or remove words. ONLY modify capitalization and punctuation to make it sound like a fast-paced, breathless storyteller.
+You will receive a JSON object from a scriptwriter. Take the 'script' field and rewrite it for voice performance.
+
+🚨 CRITICAL PAUSE RULE:
+Do NOT use ellipses ("...") anywhere, not even once. Ellipses make TTS voices sound hesitant, breathless, or unsure — the opposite of what a confident narrator sounds like.
+Default to commas and periods for pacing — they produce the most natural, appropriately-sized breath in TTS. A comma is a quick breath. A period is a full stop and a beat to reset.
+Em dashes (—) are a LAST RESORT, not a default. Use at most ONE per script, and only for a true hard interruption or gut-punch reveal. If you're reaching for a dash anywhere else, break it into two short sentences instead — a period gives you almost the same punch with a smaller, more controlled pause than a dash does.
+Vary sentence length for rhythm: mix short punchy sentences with longer ones, using periods and commas to do that work — not dashes.
+
+🚨 CRITICAL VOICE RULE:
+Write the way a confident human narrator talks, not the way an article reads. Use contractions (it's, didn't, wasn't) unless a word deserves full weight without one. No stiff, formal, or robotic phrasing.
+
+🚨 EMPHASIS RULE (influencer delivery):
+CAPITALIZE exactly one word per sentence — occasionally two, never more — to punch the delivery, the way a confident creator naturally stresses one word when talking straight to camera. Pick the word that carries the shock, the reveal, the stakes, or the turn (e.g. 'That paint was PURE radium', 'The company KNEW it was poison'). Never capitalize connective words (the, and, but, was), whole phrases, or more than one word back-to-back. Some sentences should get zero caps — if every sentence has one, it stops reading as emphasis and starts reading as shouting. Reserve it for the words that actually deserve the hit.
+
+🚨 CRITICAL PRONUNCIATION RULE:
+Fix anything a TTS engine could stumble on. Spell out ambiguous numbers, dates, and abbreviations the way they're meant to be spoken (e.g. '1889' → 'eighteen eighty-nine', 'mg' → 'milligrams', 'Dr.' → 'Doctor'). Only do this where mispronunciation risk is real — don't over-spell things that are already unambiguous.
+
+🚨 NO MARKUP RULE:
+Never insert bracketed tags, SSML, or asterisks. No [pause], no <break>, no *emphasis*. Pacing and emotion must come only from word choice, sentence structure, punctuation, and the capitalization rule above.
+
+OTHER RULES:
+- Keep the exact same facts, story beats, and approximate word count (110-130 words) as the original. You are re-voicing it, not rewriting the story.
+- The hook (first line) must hit just as hard and just as fast spoken aloud as it does written — tighten the phrasing if needed, don't soften the content.
+- Before finalizing, read it back in your head as spoken audio. If a sentence would make a voice actor stumble, breathe wrong, sound like it's shouting, or sound like it's reading a Wikipedia page, rewrite that sentence.
 
 Raw Script:
 {script}
@@ -278,11 +299,22 @@ def generate_audio_and_captions(script_text, profile, audio_path, timestamps_cac
         "model_id": profile.get("voice_model", "eleven_multilingual_v2"),
         "voice_settings": {
             "stability": profile.get("voice_stability", 0.30), 
-            "similarity_boost": 0.80, 
-            "style": profile.get("voice_style", 0.65),
+            "similarity_boost": profile.get("voice_similarity", 0.55), 
+            "style": profile.get("voice_style", 0.80),
+            "speed": profile.get("voice_speed", 1.15),
             "use_speaker_boost": True
         }
     }
+    
+    # --- DEBUGGING FILE CREATION ---
+    debug_path = os.path.join(os.path.dirname(audio_path), "elevenlabs_debug_request.json")
+    try:
+        with open(debug_path, "w", encoding="utf-8") as f:
+            json.dump({"url": url, "payload": data}, f, indent=4)
+        print(f"   🐛 ElevenLabs request payload saved for debugging to: {debug_path}")
+    except Exception as e:
+        print(f"   ⚠️ Could not save ElevenLabs debug file: {e}")
+    # -------------------------------
     
     start_idx = current_eleven_idx
     while True:
@@ -662,9 +694,9 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_e
 # ==============================================================================
 
 def cleanup_workspace(assets_dir, bg_music_filename):
-    print("🧹 Running surgical cleanup (Leaving history and bg_music intact)...")
+    print("🧹 Running surgical cleanup (Leaving history, bg_music, and debug files intact)...")
     for file in os.listdir(assets_dir):
-        if file.startswith("serper_"):
+        if file.startswith("serper_") or file == "elevenlabs_debug_request.json":
             continue
             
         if file.endswith(".mp4") or file.endswith(".jpg") or file.endswith(".png") or file == "voiceover.mp3" or "cache" in file:
