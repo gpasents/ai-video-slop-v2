@@ -74,7 +74,7 @@ current_pexels_idx = 0
 def generate_with_fallback(contents, model_queue, config=None):
     global current_gemini_idx
     attempts = 0
-    max_attempts = len(GEMINI_KEYS) * 3  # Cycle through all keys up to 3 times if needed
+    max_attempts = len(GEMINI_KEYS) * 3  
     backoff = 2
     
     while attempts < max_attempts:
@@ -89,12 +89,11 @@ def generate_with_fallback(contents, model_queue, config=None):
                 return response
             except APIError as e:
                 err_str = str(e).lower()
-                # Catch rate limits, quota limits, or transient burst blocks
                 if any(k in err_str for k in ["429", "quota", "exhausted", "limit"]):
                     print(f"⚠️ Key Index [{current_gemini_idx}] rate-limited on {model_name}. Cycling to next key...")
                     time.sleep(backoff)
-                    backoff = min(backoff * 2, 15) # Cap backoff at 15 seconds
-                    break  # Break out of the model loop immediately to shift keys
+                    backoff = min(backoff * 2, 15) 
+                    break 
                 
                 print(f"⚠️ Model {model_name} failed on key index [{current_gemini_idx}]: {e}")
                 time.sleep(1)
@@ -106,7 +105,7 @@ def generate_with_fallback(contents, model_queue, config=None):
     raise Exception("❌ CRITICAL: Gemini API limits reached on all available keys and models after multiple retries.")
 
 # ==============================================================================
-# PROFILE MANAGEMENT (PRODUCTION VIRAL METADATA)
+# PROFILE MANAGEMENT
 # ==============================================================================
 
 def load_or_create_profile(profile_name):
@@ -121,7 +120,7 @@ def load_or_create_profile(profile_name):
     
     default_profile = {
         "theme_name": "Viral Variety",
-        "voice_id": "TX3LPaxmHKxFdv7VOQHJ", # Liam
+        "voice_id": "TX3LPaxmHKxFdv7VOQHJ", 
         "voice_model": "eleven_multilingual_v2",
         "voice_stability": 0.30,
         "voice_similarity": 0.55,
@@ -203,8 +202,9 @@ Choose moments with maximum impact, such as the exact moment a specific historic
 
 Rules:
 1. Provide the exact 'start' time in seconds corresponding to the word where the image should appear.
-2. Provide a 'search_query' for Google Images. It MUST be highly specific (e.g. "John Wayne Gacy mugshot 1978").
+2. Provide a 'search_query' for Google Images. It MUST be highly specific and visually concrete (e.g., "John Wayne Gacy mugshot 1978"). NEVER use abstract nouns or concepts like "truth", "carnage", or "soaring". If the script mentions a generic concept, identify a specific historical object, location, or person related to it instead.
 3. Provide a 'duration' in seconds for how long the image should stay on screen (usually 2.0 to 3.0).
+4. Provide an 'image_type' classification. Use "person" if the query is asking for a human/portrait, or use "object" if it is asking for a location, item, document, or concept.
 
 Voiceover Timestamps:
 {timestamps}
@@ -215,7 +215,8 @@ Output ONLY a JSON object with this exact structure:
     {
       "start": 1.45,
       "search_query": "Mike the Headless Chicken historical photo",
-      "duration": 2.5
+      "duration": 2.5,
+      "image_type": "object"
     }
   ]
 }
@@ -396,7 +397,7 @@ def generate_editor_effects(subs_data, profile, effects_cache_file, is_batching)
     effects = data.get("effects", [])
     
     for effect in effects:
-        print(f"  ⚡ AI Editor queued image '{effect.get('search_query')}' at {effect.get('start')}s")
+        print(f"  ⚡ AI Editor queued image '{effect.get('search_query')}' (Type: {effect.get('image_type', 'object')}) at {effect.get('start')}s")
     
     with open(effects_cache_file, "w", encoding="utf-8") as f:
         json.dump(effects, f, indent=4)
@@ -474,29 +475,32 @@ def fetch_serper_image(search_query, output_dir, ignored_urls=None):
         return None, None
 
 # ==============================================================================
-# OPTIMIZED STAGE 4.5: AI DEDUPLICATION WITH LOCAL IMAGE COMPRESSION
+# UPGRADED STAGE 4.5: GEMINI VISION QUALITY ASSURANCE (QA)
 # ==============================================================================
-def deduplicate_and_replace_images(matched_effects, assets_dir):
+def analyze_and_filter_images(matched_effects, assets_dir):
     valid_effects = [e for e in matched_effects if e.get('local_path') and os.path.exists(e['local_path'])]
-    if len(valid_effects) < 2:
+    if len(valid_effects) == 0:
         return matched_effects
 
-    print("🧠 [STAGE 4.5] Downscaling image data and analyzing visual duplicates with Gemini...")
+    print("🧠 [STAGE 4.5] Downscaling image data and using Gemini Vision for QA (Deduplication & Relevance Check)...")
     
     prompt = (
-        "You are an expert image analyst. Identify if any of these images are practically identical to an earlier image in the sequence "
-        "(e.g., same source photo, even if it is cropped, resized, or color-shifted). "
-        "Return ONLY a JSON object containing a list of the 0-based indices of the images that are duplicates and should be replaced. "
-        "Strict format: {\"duplicates\": [2, 4]}"
+        "You are an expert Quality Assurance director for a documentary video. "
+        "I am providing you with a sequence of images and their intended search queries.\n\n"
+        "Your job is to flag any image that fails EITHER of these two rules:\n"
+        "1. Duplicate: The image is visually identical to an earlier image in the sequence.\n"
+        "2. Irrelevant or Low Quality: The image clearly does NOT match its intended search query, is an abstract drawing/icon instead of a photo, contains heavy watermarks, or is completely nonsensical.\n\n"
+        "Return ONLY a JSON object containing a list of the 0-based indices of the images that fail these rules and must be replaced. "
+        "Strict format: {\"bad_indices\": [1, 3]}"
     )
     
     contents = [prompt]
     
     for i, effect in enumerate(valid_effects):
         try:
-            # ⚡ OPTIMIZATION: Downscale image locally to save up to 90% of token usage
+            # Downscale image locally to save tokens
             img = Image.open(effect['local_path'])
-            img.thumbnail((512, 512)) # 512px max on longest side keeps aspect ratio and details intact
+            img.thumbnail((512, 512)) 
             
             if img.mode != "RGB":
                 img = img.convert("RGB")
@@ -505,13 +509,13 @@ def deduplicate_and_replace_images(matched_effects, assets_dir):
             img.save(img_byte_arr, format='JPEG', quality=75)
             img_bytes = img_byte_arr.getvalue()
             
-            contents.append(f"Image {i}:")
+            contents.append(f"Image {i} (Intended Query: '{effect.get('search_query', 'Unknown')}'):")
             contents.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
         except Exception as img_err:
             print(f"  ⚠️ Local compression failed for index {i}: {img_err}. Processing raw fallback...")
             with open(effect['local_path'], "rb") as f:
                 img_bytes = f.read()
-            contents.append(f"Image {i}:")
+            contents.append(f"Image {i} (Intended Query: '{effect.get('search_query', 'Unknown')}'):")
             contents.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
         
     try:
@@ -524,18 +528,18 @@ def deduplicate_and_replace_images(matched_effects, assets_dir):
             )
         )
         data = json.loads(response.text)
-        dupes = data.get("duplicates", [])
+        bad_indices = data.get("bad_indices", [])
         
-        if not dupes:
-            print("  ✅ Gemini confirms all images are visually distinct!")
+        if not bad_indices:
+            print("  ✅ Gemini confirms all images are unique and highly relevant!")
             return matched_effects
             
-        print(f"  ⚠️ Gemini flagged visual duplicates at indices: {dupes}. Swapping results...")
+        print(f"  ⚠️ Gemini flagged bad/irrelevant images at indices: {bad_indices}. Swapping results...")
         
-        for idx in dupes:
+        for idx in bad_indices:
             if isinstance(idx, int) and 0 <= idx < len(valid_effects):
                 bad_effect = valid_effects[idx]
-                print(f"  🔄 Re-fetching clean source image for '{bad_effect['search_query']}'...")
+                print(f"  🔄 Re-fetching better source image for '{bad_effect['search_query']}'...")
                 
                 new_path, new_url = fetch_serper_image(
                     bad_effect['search_query'], 
@@ -554,7 +558,7 @@ def deduplicate_and_replace_images(matched_effects, assets_dir):
         return matched_effects
 
     except Exception as e:
-        print(f"  ⚠️ AI Deduplication skipped (Transient API/Quota issue): {e}. Proceeding safe.")
+        print(f"  ⚠️ AI QA skipped (Transient API/Quota issue): {e}. Proceeding safe.")
         return matched_effects
 
 
@@ -638,23 +642,34 @@ def download_b_roll(tags, assets_dir, is_batching):
 
 def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_effects, final_title, output_dir, profile):
     print("🎞️ Stitching visual, audio, captions, and EFFECTS in MoviePy...")
+    
+    # ---------------------------
+    # SETUP MASTER AUDIO TRACKS
+    # ---------------------------
+    audio_tracks = []
     audio = AudioFileClip(audio_path)
     audio_duration = audio.duration
-    
-    clip_duration = audio_duration / len(valid_videos) if valid_videos else audio_duration
+    audio_tracks.append(audio)
+
+    bg_vol = profile.get("bg_music_volume", 0.08)
+    bg_clip = None
+    if bg_music_path and os.path.exists(bg_music_path):
+        bg_clip = AudioFileClip(bg_music_path).fx(afx.volumex, bg_vol)
+        bg_clip = afx.audio_loop(bg_clip, duration=audio_duration)
+        audio_tracks.append(bg_clip)
 
     if RENDER_QUALITY == "test":
         target_w, target_h, render_fps, font_size, stroke_thickness, offset_shadow = 540, 960, 30, 50, 7, 4
     else:
         target_w, target_h, render_fps, font_size, stroke_thickness, offset_shadow = 1080, 1920, 60, 98, 15, 8
 
-    bg_vol = profile.get("bg_music_volume", 0.08)
     vis_settings = profile.get("visual_settings", {})
     font_choice = vis_settings.get("font_family", "Arial-Black")
     font_color = vis_settings.get("font_color", "#FFFF00")
     stroke_col = vis_settings.get("stroke_color", "black")
     y_perc = vis_settings.get("caption_y_percentage", 0.60)
 
+    clip_duration = audio_duration / len(valid_videos) if valid_videos else audio_duration
     clips = []
     
     for vid in valid_videos:
@@ -677,16 +692,6 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_e
         clips.append(clip)
         
     final_visual = concatenate_videoclips(clips, method="compose")
-    
-    bg_clip = None
-    if bg_music_path and os.path.exists(bg_music_path):
-        bg_clip = AudioFileClip(bg_music_path).fx(afx.volumex, bg_vol)
-        bg_clip = afx.audio_loop(bg_clip, duration=audio_duration)
-        final_audio = CompositeAudioClip([audio, bg_clip])
-    else:
-        final_audio = audio
-        
-    final_visual = final_visual.set_audio(final_audio).subclip(0, audio_duration)
     
     # --- CAPTIONS ---
     text_clips = []
@@ -718,30 +723,78 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_e
         word_clip = CompositeVideoClip([txt_shadow, txt_stroke, txt_fill], size=(box_w, box_h)).resize(snappy_pop).set_position(('center', caption_y_pos)).set_start(start).set_end(end)
         text_clips.append(word_clip)
 
-    # --- EFFECTS LAYERING ---
+    # --- EFFECTS LAYERING (PRESERVING ASPECT RATIO) ---
     effect_clips = []
+    sfx_clips = []
+    
+    sfx_dir = "sfx"
+    shutter_sfx_path = os.path.join(sfx_dir, "shutter.mp3")
+    
+    def image_overshoot_pop(t):
+        if t < 0.07:
+            return 0.10 + (1.10 / 0.07) * t
+        elif t < 0.14:
+            return 1.20 - (0.25 / 0.07) * (t - 0.07)
+        elif t < 0.20:
+            return 0.95 + (0.05 / 0.06) * (t - 0.14)
+        return 1.0
+
     for effect in matched_effects:
+        start_time = float(effect.get('start', 0.0))
+        image_type = effect.get('image_type', 'object').lower()
+        
+        if image_type == 'person' and os.path.exists(shutter_sfx_path):
+            try:
+                sfx_clip = AudioFileClip(shutter_sfx_path).set_start(start_time).fx(afx.volumex, 0.3)
+                sfx_clips.append(sfx_clip)
+            except Exception as e:
+                print(f"  ⚠️ Skipping sound effect {shutter_sfx_path}: {e}")
+                
         if effect.get('local_path') and os.path.exists(effect['local_path']):
             try:
                 fx_clip = ImageClip(effect['local_path'])
                 
-                target_img_width = int(target_w * 0.7)
-                fx_clip = fx_clip.resize(width=target_img_width)
+                # --- PRESERVE ASPECT RATIO & NORMALIZE SIZE ---
+                # Instead of cropping, we scale the image so it fits neatly inside a uniform bounding box
+                max_w = int(target_w * 0.8)
+                max_h = int(target_h * 0.45)
                 
-                start_time = float(effect.get('start', 0.0))
+                w, h = fx_clip.size
+                scale_factor = min(max_w / float(w), max_h / float(h))
+                
+                fx_clip = fx_clip.resize(scale_factor)
+                # ----------------------------------------------
+                
+                if fx_clip.mask is None:
+                    fx_clip = fx_clip.add_mask()
+                    
+                base_w, base_h = fx_clip.size 
                 duration = float(effect.get('duration', 2.0))
                 
+                def get_dynamic_pos(t, bh=base_h):
+                    scale = image_overshoot_pop(t)
+                    curr_h = bh * scale
+                    y = (target_h * 0.35) - (curr_h / 2)
+                    return ('center', y)
+                
                 fx_clip = (fx_clip
-                           .set_position(('center', target_h * 0.25))
                            .set_start(start_time)
                            .set_duration(duration)
-                           .crossfadein(0.3)
-                           .crossfadeout(0.3))
+                           .resize(image_overshoot_pop) 
+                           .set_position(get_dynamic_pos) 
+                           .crossfadein(0.15) 
+                           .crossfadeout(0.2)) 
                 
                 effect_clips.append(fx_clip)
             except Exception as e:
                 print(f"  ⚠️ Skipping image {effect.get('local_path')} due to render error: {e}")
         
+    if sfx_clips:
+        audio_tracks.extend(sfx_clips)
+        
+    final_mixed_audio = CompositeAudioClip(audio_tracks)
+    final_visual = final_visual.set_audio(final_mixed_audio).subclip(0, audio_duration)
+    
     final_video = CompositeVideoClip([final_visual] + effect_clips + text_clips)
     
     safe_title = "".join([c for c in final_title if c.isalpha() or c.isdigit() or c==' ']).rstrip()
@@ -764,6 +817,7 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_e
     audio.close()
     if bg_clip: bg_clip.close()
     for clip in clips: clip.close()
+    for sfx in sfx_clips: sfx.close()
 
     print("🎉 Render complete and resources released.")
     return output_path, base_filename
@@ -848,8 +902,8 @@ def main():
                     effect['source_url'] = source_url
                     effect['ignored_urls'] = [source_url] if source_url else []
         
-        # STAGE 4.5: Optimized AI Deduplication
-        matched_effects = deduplicate_and_replace_images(matched_effects, assets_dir)
+        # STAGE 4.5: Upgraded Gemini QA
+        matched_effects = analyze_and_filter_images(matched_effects, assets_dir)
         
         bg_music_path = local_bg_music if os.path.exists(local_bg_music) else None
         valid_videos = download_b_roll(gemini_data['tags'], assets_dir, is_batching)
