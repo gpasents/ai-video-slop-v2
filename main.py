@@ -220,6 +220,17 @@ Output ONLY a JSON object with this exact structure:
     }
   ]
 }
+""",
+        "vision_qa_prompt": """
+You are an expert Quality Assurance director for a documentary video.
+I am providing you with a sequence of images and their intended search queries.
+
+Your job is to flag any image that fails EITHER of these two rules:
+1. Duplicate: The image is visually identical to an earlier image in the sequence.
+2. Irrelevant or Low Quality: The image clearly does NOT match its intended search query, is an abstract drawing/icon instead of a photo, contains heavy watermarks, or is completely nonsensical.
+
+Return ONLY a JSON object containing a list of the 0-based indices of the images that fail these rules and must be replaced.
+Strict format: {"bad_indices": [1, 3]}
 """
     }
     
@@ -477,23 +488,15 @@ def fetch_serper_image(search_query, output_dir, ignored_urls=None):
 # ==============================================================================
 # UPGRADED STAGE 4.5: GEMINI VISION QUALITY ASSURANCE (QA)
 # ==============================================================================
-def analyze_and_filter_images(matched_effects, assets_dir):
+def analyze_and_filter_images(matched_effects, assets_dir, profile):
     valid_effects = [e for e in matched_effects if e.get('local_path') and os.path.exists(e['local_path'])]
     if len(valid_effects) == 0:
         return matched_effects
 
     print("🧠 [STAGE 4.5] Downscaling image data and using Gemini Vision for QA (Deduplication & Relevance Check)...")
     
-    prompt = (
-        "You are an expert Quality Assurance director for a documentary video. "
-        "I am providing you with a sequence of images and their intended search queries.\n\n"
-        "Your job is to flag any image that fails EITHER of these two rules:\n"
-        "1. Duplicate: The image is visually identical to an earlier image in the sequence.\n"
-        "2. Irrelevant or Low Quality: The image clearly does NOT match its intended search query, is an abstract drawing/icon instead of a photo, contains heavy watermarks, or is completely nonsensical.\n\n"
-        "Return ONLY a JSON object containing a list of the 0-based indices of the images that fail these rules and must be replaced. "
-        "Strict format: {\"bad_indices\": [1, 3]}"
-    )
-    
+    # Pull the QA prompt from the profile JSON
+    prompt = profile.get("vision_qa_prompt", "You are a QA Director. Flag indices of bad or identical images as JSON {'bad_indices': []}.")
     contents = [prompt]
     
     for i, effect in enumerate(valid_effects):
@@ -755,7 +758,6 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_e
                 fx_clip = ImageClip(effect['local_path'])
                 
                 # --- PRESERVE ASPECT RATIO & NORMALIZE SIZE ---
-                # Instead of cropping, we scale the image so it fits neatly inside a uniform bounding box
                 max_w = int(target_w * 0.8)
                 max_h = int(target_h * 0.45)
                 
@@ -903,7 +905,7 @@ def main():
                     effect['ignored_urls'] = [source_url] if source_url else []
         
         # STAGE 4.5: Upgraded Gemini QA
-        matched_effects = analyze_and_filter_images(matched_effects, assets_dir)
+        matched_effects = analyze_and_filter_images(matched_effects, assets_dir, profile)
         
         bg_music_path = local_bg_music if os.path.exists(local_bg_music) else None
         valid_videos = download_b_roll(gemini_data['tags'], assets_dir, is_batching)
