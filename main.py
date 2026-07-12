@@ -10,6 +10,7 @@ import random
 import math
 import io
 import hashlib
+import shutil
 from dotenv import load_dotenv
 from PIL import Image, UnidentifiedImageError
 
@@ -135,56 +136,40 @@ def load_or_create_profile(profile_name):
             "caption_y_percentage": 0.60
         },
         "writer_prompt": """
-You are a viral YouTube Shorts, TikTok, and Instagram Reels producer specializing in high-retention storytelling. 
+You are a viral YouTube Shorts, TikTok, and Instagram Reels producer specializing in hyper-retention storytelling. 
 Create a unique 45-second script based on fascinating facts, macabre history, bizarre science, or intriguing true stories.
 
 Do NOT use any of these past topics: {history}
 
-🚨 CRITICAL HOOK RULE:
+🚨 CRITICAL HOOK & SEAMLESS LOOP RULE:
 DO NOT start the script with "Imagine this", "Did you know", or by stating a year/date. 
 The first 3 seconds MUST immediately state the most shocking, high-stakes, or bizarre action of the story.
-
-🚨 CRITICAL OUTRO / CTA RULE:
-DO NOT add a traditional, separate outro. Instead, weave a rapid Call-To-Action seamlessly into the final punchline. 
+CRITICAL: The script must end mid-sentence or on a cliffhanger punchline that seamlessly flows directly back into the opening hook word, creating a perfect, infinite replay loop.
 
 CRITICAL VISUAL B-ROLL RULE:
-The 'tags' array MUST contain exactly 16 SINGLE-WORD search terms that match the chronological story beats for Pexels.
+The 'tags' array MUST contain exactly 16 highly descriptive TWO-WORD search phrases (e.g., "arctic ice", "vintage shipwreck", "dark blizzard") that match the chronological story beats for Pexels. Avoid abstract terms.
 
 Output ONLY a JSON object with this exact structure:
 {
   "title": "Internal working title",
   "script": "The pacing-optimized spoken script. Around 110-130 words.",
-  "tags": ["word1", "word2", "word3", "word4", "word5", "word6", "word7", "word8", "word9", "word10", "word11", "word12", "word13", "word14", "word15", "word16"],
-  "metadata": { "viral_score": 9.5 }
+  "tags": ["phrase1", "phrase2", "phrase3", "phrase4", "phrase5", "phrase6", "phrase7", "phrase8", "phrase9", "phrase10", "phrase11", "phrase12", "phrase13", "phrase14", "phrase15", "phrase16"],
+  "metadata": { "viral_score": 9.8 }
 }
 """,
         "audio_director_prompt": """
-You are an Audio Director preparing scripts for ElevenLabs AI narration on YouTube Shorts, TikTok, and Reels. You are NOT a writer — never change the story, facts, or meaning of the script. Your only job is to adjust HOW it reads aloud so a text-to-speech engine produces natural, confident, human-sounding narration.
+You are an Audio Director preparing scripts for ElevenLabs AI narration. Your only job is to adjust HOW it reads aloud so a text-to-speech engine produces natural, confident, human-sounding narration.
 
 You will receive a JSON object from a scriptwriter. Take the 'script' field and rewrite it for voice performance.
 
 🚨 CRITICAL PAUSE RULE:
-Do NOT use ellipses ("...") anywhere, not even once. Ellipses make TTS voices sound hesitant, breathless, or unsure — the opposite of what a confident narrator sounds like.
-Default to commas and periods for pacing — they produce the most natural, appropriately-sized breath in TTS. A comma is a quick breath. A period is a full stop and a beat to reset.
-Em dashes (—) are a LAST RESORT, not a default. Use at most ONE per script, and only for a true hard interruption or gut-punch reveal. If you're reaching for a dash anywhere else, break it into two short sentences instead — a period gives you almost the same punch with a smaller, more controlled pause than a dash does.
-Vary sentence length for rhythm: mix short punchy sentences with longer ones, using periods and commas to do that work — not dashes.
+Do NOT use ellipses ("..."). Use commas for quick breaths and periods for full stops. Vary sentence lengths for a natural human cadence.
 
-🚨 CRITICAL VOICE RULE:
-Write the way a confident human narrator talks, not the way an article reads. Use contractions (it's, didn't, wasn't) unless a word deserves full weight without one. No stiff, formal, or robotic phrasing.
-
-🚨 EMPHASIS RULE (influencer delivery):
-CAPITALIZE exactly one word per sentence — occasionally two, never more — to punch the delivery, the way a confident creator naturally stresses one word when talking straight to camera. Pick the word that carries the shock, the reveal, the stakes, or the turn (e.g. 'That paint was PURE radium', 'The company KNEW it was poison'). Never capitalize connective words (the, and, but, was), whole phrases, or more than one word back-to-back. Some sentences should get zero caps — if every sentence has one, it stops reading as emphasis and starts reading as shouting. Reserve it for the words that actually deserve the hit.
+🚨 CRITICAL DYNAMIC CAPTION RULE:
+You must explicitly target exactly 4 to 7 crucial, high-impact shock words to be completely UPPERCASE. These words will trigger custom color changes in production (e.g., 'That paint was PURE radium'). Do not over-capitalize.
 
 🚨 CRITICAL PRONUNCIATION RULE:
-Fix anything a TTS engine could stumble on. Spell out ambiguous numbers, dates, and abbreviations the way they're meant to be spoken (e.g. '1889' → 'eighteen eighty-nine', 'mg' → 'milligrams', 'Dr.' → 'Doctor'). Only do this where mispronunciation risk is real — don't over-spell things that are already unambiguous.
-
-🚨 NO MARKUP RULE:
-Never insert bracketed tags, SSML, or asterisks. No [pause], no <break>, no *emphasis*. Pacing and emotion must come only from word choice, sentence structure, punctuation, and the capitalization rule above.
-
-OTHER RULES:
-- Keep the exact same facts, story beats, and approximate word count (110-130 words) as the original. You are re-voicing it, not rewriting the story.
-- The hook (first line) must hit just as hard and just as fast spoken aloud as it does written — tighten the phrasing if needed, don't soften the content.
-- Before finalizing, read it back in your head as spoken audio. If a sentence would make a voice actor stumble, breathe wrong, sound like it's shouting, or sound like it's reading a Wikipedia page, rewrite that sentence.
+Spell out ambiguous numbers, dates, and abbreviations exactly how they should be spoken (e.g., '1931' → 'nineteen thirty-one').
 
 Raw Script:
 {script}
@@ -195,16 +180,16 @@ Output ONLY a JSON object with this exact structure:
 }
 """,
         "editor_prompt": """
-You are a master Video Editor.
+You are a master Cinematic Video Editor and Sound Designer.
 I am going to provide you with the exact, word-by-word timestamps of a voiceover.
-Your job is to strategically pick a dynamic amount of moments (typically 4 to 8, depending on the pacing and density of the script) in the timeline to flash a highly specific dynamic image on screen.
-Choose moments with maximum impact, such as the exact moment a specific historical figure, object, or location is first introduced.
+Your job is to strategically pick 5 to 9 key moments in the timeline to flash a highly specific historical image on screen, AND assign an accompanying cinematic sound effect (SFX) to amplify the impact.
 
 Rules:
-1. Provide the exact 'start' time in seconds corresponding to the word where the image should appear.
-2. Provide a 'search_query' for Google Images. It MUST be highly specific and visually concrete (e.g., "John Wayne Gacy mugshot 1978"). NEVER use abstract nouns or concepts like "truth", "carnage", or "soaring". If the script mentions a generic concept, identify a specific historical object, location, or person related to it instead.
-3. Provide a 'duration' in seconds for how long the image should stay on screen (usually 2.0 to 3.0).
-4. Provide an 'image_type' classification. Use "person" if the query is asking for a human/portrait, or use "object" if it is asking for a location, item, document, or concept.
+1. Provide the exact 'start' time in seconds for the visual asset.
+2. Provide a 'search_query' for Google Images. It MUST be historically concrete and highly specific (e.g., "SS Baychimo stuck in ice 1931 photo", "Victor Lustig police mugshot"). NEVER use abstract concepts.
+3. Provide a 'duration' in seconds for the image overlay (usually 2.0 to 3.5).
+4. Provide an 'image_type' ("person" or "object").
+5. Provide an 'sfx_trigger' classification based on the emotional beat. You MUST choose ONLY from these exact words: "whoosh", "thud", "newspaper", "pop", "shutter", or "swoosh".
 
 Voiceover Timestamps:
 {timestamps}
@@ -214,9 +199,10 @@ Output ONLY a JSON object with this exact structure:
   "effects": [
     {
       "start": 1.45,
-      "search_query": "Mike the Headless Chicken historical photo",
+      "search_query": "SS Baychimo ghost ship arctic historical photo",
       "duration": 2.5,
-      "image_type": "object"
+      "image_type": "object",
+      "sfx_trigger": "thud"
     }
   ]
 }
@@ -375,6 +361,7 @@ def generate_audio_and_captions(script_text, profile, audio_path, timestamps_cac
         subs = []
         for w_start, w_end, word in words:
             if word: 
+                # Keep original casing here so we can detect uppercase emphasis later
                 subs.append([w_start, w_end, word])
 
         with open(timestamps_cache_file, "w", encoding="utf-8") as f:
@@ -636,7 +623,6 @@ def download_b_roll(tags, assets_dir, is_batching):
         if not slot_filled:
             print(f"   ⚠️ Exhausted options for '{tag}'. Using emergency fallback.")
             if downloaded:
-                import shutil
                 fallback_name = os.path.join(assets_dir, f"broll_{i:02d}_emergency_fallback_{uuid.uuid4().hex[:4]}.mp4")
                 shutil.copy(downloaded[-1], fallback_name)
                 downloaded.append(fallback_name)
@@ -712,9 +698,13 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_e
         raw_text = text.upper()
         tight_kerning = -5 if RENDER_QUALITY != "test" else -2
         
+        # 🟢 DYNAMIC HIGHLIGHT COLOR 🟢
+        is_emphasized = text.isupper() and len(text) > 1
+        current_font_color = "#00FF00" if is_emphasized else font_color
+        
         txt_shadow = TextClip(raw_text, fontsize=font_size, color=stroke_col, font=font_choice, stroke_color=stroke_col, stroke_width=stroke_thickness, kerning=tight_kerning, method='label', align='center')
         txt_stroke = TextClip(raw_text, fontsize=font_size, color=stroke_col, font=font_choice, stroke_color=stroke_col, stroke_width=stroke_thickness, kerning=tight_kerning, method='label', align='center')
-        txt_fill = TextClip(raw_text, fontsize=font_size, color=font_color, font=font_choice, stroke_width=0, kerning=tight_kerning, method='label', align='center')
+        txt_fill = TextClip(raw_text, fontsize=font_size, color=current_font_color, font=font_choice, stroke_width=0, kerning=tight_kerning, method='label', align='center')
         
         box_w, box_h = max(txt_shadow.w, txt_stroke.w, txt_fill.w) + 40, max(txt_shadow.h, txt_stroke.h, txt_fill.h) + 40
         cx, cy = (box_w - txt_stroke.w) / 2, (box_h - txt_stroke.h) / 2
@@ -731,7 +721,17 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_e
     sfx_clips = []
     
     sfx_dir = "sfx"
-    shutter_sfx_path = os.path.join(sfx_dir, "shutter.mp3")
+    
+    # 🔊 DYNAMIC SOUND EFFECTS MAP 🔊
+    # This precisely links the AI's short output to your exact filenames
+    sfx_mapping = {
+        "whoosh": "dragon-studio-simple-whoosh-382724.mp3",
+        "thud": "dragon-studio-thud-sound-effect-405470.mp3",
+        "newspaper": "floraphonic-newspaper-foley-4-196721.mp3",
+        "pop": "pop.mp3",
+        "shutter": "shutter.mp3",
+        "swoosh": "swoosh.mp3"
+    }
     
     def image_overshoot_pop(t):
         if t < 0.07:
@@ -746,12 +746,24 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_e
         start_time = float(effect.get('start', 0.0))
         image_type = effect.get('image_type', 'object').lower()
         
-        if image_type == 'person' and os.path.exists(shutter_sfx_path):
+        # Translates the AI trigger into your exact file
+        sfx_type = effect.get('sfx_trigger', 'whoosh').lower()
+        actual_filename = sfx_mapping.get(sfx_type, "dragon-studio-simple-whoosh-382724.mp3") 
+        custom_sfx_path = os.path.join(sfx_dir, actual_filename)
+        shutter_sfx_path = os.path.join(sfx_dir, "shutter.mp3")
+        
+        if os.path.exists(custom_sfx_path):
+            try:
+                sfx_clip = AudioFileClip(custom_sfx_path).set_start(start_time).fx(afx.volumex, 0.3)
+                sfx_clips.append(sfx_clip)
+            except Exception as e:
+                print(f"  ⚠️ Skipping sound effect {custom_sfx_path}: {e}")
+        elif image_type == 'person' and os.path.exists(shutter_sfx_path):
             try:
                 sfx_clip = AudioFileClip(shutter_sfx_path).set_start(start_time).fx(afx.volumex, 0.3)
                 sfx_clips.append(sfx_clip)
             except Exception as e:
-                print(f"  ⚠️ Skipping sound effect {shutter_sfx_path}: {e}")
+                pass
                 
         if effect.get('local_path') and os.path.exists(effect['local_path']):
             try:
