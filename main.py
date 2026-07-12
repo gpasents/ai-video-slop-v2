@@ -31,7 +31,7 @@ import moviepy.audio.fx.all as afx
 DEV_MODE = False
 
 # ⚡ RENDER SPEED TOGGLE ("test" or "production") ⚡
-RENDER_QUALITY = "test"
+RENDER_QUALITY = "production"
 
 # Load environment variables from the local .env file
 load_dotenv()
@@ -106,6 +106,38 @@ def generate_with_fallback(contents, model_queue, config=None):
     raise Exception("❌ CRITICAL: Gemini API limits reached on all available keys and models after multiple retries.")
 
 # ==============================================================================
+# ROBUST JSON PARSER HELPER
+# ==============================================================================
+
+def clean_json_response(text):
+    """Safely extracts and parses JSON even if the model wraps it in Markdown."""
+    try:
+        # First attempt a direct parse
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    
+    # Try to find a JSON block wrapped in markdown
+    match = re.search(r"```(?:json)?(.*?)```", text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(1).strip())
+        except json.JSONDecodeError:
+            pass
+            
+    # As a last resort, try to extract everything between the first { and last }
+    try:
+        start_idx = text.find('{')
+        end_idx = text.rfind('}')
+        if start_idx != -1 and end_idx != -1:
+            return json.loads(text[start_idx:end_idx+1])
+    except json.JSONDecodeError:
+        pass
+        
+    print(f"⚠️ Failed to parse JSON from response. Raw text:\n{text}")
+    raise ValueError("Could not parse JSON from the model's response.")
+
+# ==============================================================================
 # PROFILE MANAGEMENT
 # ==============================================================================
 
@@ -137,24 +169,67 @@ def load_or_create_profile(profile_name):
         },
         "writer_prompt": """
 You are a viral YouTube Shorts, TikTok, and Instagram Reels producer specializing in hyper-retention storytelling. 
-Create a unique 45-second script based on fascinating facts, macabre history, bizarre science, or intriguing true stories.
+Create a unique 45-second script concept based on fascinating facts, macabre history, bizarre science, or intriguing true stories.
 
 Do NOT use any of these past topics: {history}
 
-🚨 CRITICAL HOOK & SEAMLESS LOOP RULE:
+🚨 CRITICAL HOOK & ENDING RULE:
 DO NOT start the script with "Imagine this", "Did you know", or by stating a year/date. 
-The first 3 seconds MUST immediately state the most shocking, high-stakes, or bizarre action of the story.
-CRITICAL: The script must end mid-sentence or on a cliffhanger punchline that seamlessly flows directly back into the opening hook word, creating a perfect, infinite replay loop.
+The first 3 seconds MUST be a "Curiosity Loop"—an unanswered question or a bizarre contradiction that naturally forces the brain to seek closure. Do not just state a shocking fact; set up an immediate, unresolved mystery that the viewer HAS to watch to understand.
+CRITICAL CTA ENDING: Instead of an abrupt cut, the script MUST conclude with a short, natural Call To Action (CTA). You must vary this CTA every time. Keep it punchy!
 
 CRITICAL VISUAL B-ROLL RULE:
 The 'tags' array MUST contain exactly 16 highly descriptive TWO-WORD search phrases (e.g., "arctic ice", "vintage shipwreck", "dark blizzard") that match the chronological story beats for Pexels. Avoid abstract terms.
 
+You must generate exactly 5 natural attempts at the spoken script so our producer can pick the best one. Do not force specific differences or themes between them; simply try to write the strongest possible version based on the rules above, 5 times.
+
 Output ONLY a JSON object with this exact structure:
 {
   "title": "Internal working title",
-  "script": "The pacing-optimized spoken script. Around 110-130 words.",
+  "topic_summary": "A 1-sentence factual description of the core historical event, person, or scientific phenomenon so we do not repeat it.",
+  "script_variations": [
+    "Attempt 1: The spoken script. Around 110-130 words.",
+    "Attempt 2: Another natural attempt at the script.",
+    "Attempt 3: Another natural attempt at the script.",
+    "Attempt 4: Another natural attempt at the script.",
+    "Attempt 5: Another natural attempt at the script."
+  ],
   "tags": ["phrase1", "phrase2", "phrase3", "phrase4", "phrase5", "phrase6", "phrase7", "phrase8", "phrase9", "phrase10", "phrase11", "phrase12", "phrase13", "phrase14", "phrase15", "phrase16"],
-  "metadata": { "viral_score": 9.8 }
+  "metadata": {
+    "youtube_shorts": {
+        "title": "Engaging Short Title",
+        "description": "Fascinating description of the video. #tags",
+        "tags": ["tag1", "tag2", "tag3", "tag4", "tag5", "tag6", "tag7"],
+        "made_for_kids": false,
+        "category_id": "24"
+    },
+    "tiktok": {
+        "caption": "Engaging TikTok caption here #fyp #tags",
+        "disable_comment": false,
+        "disable_duet": false,
+        "disable_stitch": false,
+        "video_cover_timestamp_ms": 1500,
+        "brand_content_toggle": false
+    },
+    "instagram_reels": {
+        "caption": "Engaging IG Reel caption here. #reelsviral #tags",
+        "share_to_feed": true,
+        "cover_image_timestamp_ms": 1500
+    }
+  }
+}
+""",
+        "script_qa_prompt": """
+You are an expert Executive Producer for YouTube Shorts.
+Review the following script variations and select the one with the strongest curiosity hook, best pacing, and highest retention probability.
+
+Script Variations:
+{variations}
+
+Output ONLY a JSON object with the index (0-based) of the best script and a 1-sentence reason.
+{
+  "best_index": 2,
+  "reason": "Strongest opening hook that introduces an immediate, unresolved paradox."
 }
 """,
         "audio_director_prompt": """
@@ -207,6 +282,15 @@ Output ONLY a JSON object with this exact structure:
   ]
 }
 """,
+        "vision_selection_prompt": """
+You are a Cinematic Art Director.
+I will provide you with multiple candidate images fetched for the historical search query: '{query}'.
+Your task is to select the single best image that is the highest quality, most visually striking, most historically relevant, and most cinematic. Avoid heavy watermarks, abstract illustrations, or completely irrelevant icons.
+Return ONLY a JSON object with the 0-based index of the chosen image.
+{
+  "best_index": 0
+}
+""",
         "vision_qa_prompt": """
 You are an expert Quality Assurance director for a documentary video.
 I am providing you with a sequence of images and their intended search queries.
@@ -241,13 +325,39 @@ def save_history(history_file, topic):
     with open(history_file, "w", encoding="utf-8") as f:
         json.dump(history, f, indent=4)
 
+def evaluate_best_script(script_variations, profile):
+    print(f"🧠 [STAGE 1.2] Executive Producer QA evaluating {len(script_variations)} script variations...")
+    prompt = profile["script_qa_prompt"].replace("{variations}", json.dumps(script_variations, indent=2))
+    
+    try:
+        response = generate_with_fallback(
+            contents=prompt,
+            model_queue=ROUTING_LOGIC["heavy_reasoning"],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.2
+            )
+        )
+        
+        data = clean_json_response(response.text)
+        best_idx = data.get("best_index", 0)
+        
+        if not isinstance(best_idx, int) or best_idx < 0 or best_idx >= len(script_variations):
+            best_idx = 0
+            
+        print(f"  🏆 Selected Variation {best_idx + 1} - Reason: {data.get('reason', 'N/A')}")
+        return script_variations[best_idx]
+    except Exception as e:
+        print(f"  ⚠️ Script QA failed: {e}. Defaulting to first variation.")
+        return script_variations[0]
+
 def generate_topic_script_tags(profile, history, script_cache_file, is_batching):
     if DEV_MODE and not is_batching and os.path.exists(script_cache_file):
         print("♻️ DEV MODE: Loading script from cache...")
         with open(script_cache_file, "r", encoding="utf-8") as f:
             return json.load(f)
 
-    print("🧠 [STAGE 1] Brainstorming unique script and generating viral properties...")
+    print("🧠 [STAGE 1] Brainstorming unique script variations and generating viral properties...")
     prompt = profile["writer_prompt"].replace("{history}", json.dumps(history))
     
     response = generate_with_fallback(
@@ -255,12 +365,22 @@ def generate_topic_script_tags(profile, history, script_cache_file, is_batching)
         model_queue=ROUTING_LOGIC["heavy_reasoning"],
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
-            temperature=0.7
+            temperature=0.8 
         )
     )
     
-    data = json.loads(response.text)
+    data = clean_json_response(response.text)
     print(f"🎯 Topic Selected: {data['title']}")
+    
+    # Run Script QA Selection
+    variations = data.get('script_variations', [])
+    if not variations and 'script' in data:
+        variations = [data['script']]
+    elif not variations:
+        variations = ["Emergency fallback script."]
+        
+    best_script = evaluate_best_script(variations, profile)
+    data['script'] = best_script
     
     with open(script_cache_file, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
@@ -285,7 +405,7 @@ def direct_audio_script(raw_script, profile, audio_dir_cache_file, is_batching):
         )
     )
     
-    data = json.loads(response.text)
+    data = clean_json_response(response.text)
     
     with open(audio_dir_cache_file, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
@@ -361,7 +481,6 @@ def generate_audio_and_captions(script_text, profile, audio_path, timestamps_cac
         subs = []
         for w_start, w_end, word in words:
             if word: 
-                # Keep original casing here so we can detect uppercase emphasis later
                 subs.append([w_start, w_end, word])
 
         with open(timestamps_cache_file, "w", encoding="utf-8") as f:
@@ -391,7 +510,7 @@ def generate_editor_effects(subs_data, profile, effects_cache_file, is_batching)
         )
     )
     
-    data = json.loads(response.text)
+    data = clean_json_response(response.text)
     effects = data.get("effects", [])
     
     for effect in effects:
@@ -402,12 +521,12 @@ def generate_editor_effects(subs_data, profile, effects_cache_file, is_batching)
         
     return effects
 
-# --- PHASE 4: SERPER API IMAGE FETCHER ---
-def fetch_serper_image(search_query, output_dir, ignored_urls=None):
+# --- STAGE 4: SERPER API MULTI-IMAGE FETCHER ---
+def fetch_serper_image_pool(search_query, output_dir, pool_size=3, ignored_urls=None):
     if ignored_urls is None:
         ignored_urls = []
         
-    print(f"🔍 Searching Google Images (via Serper) for: '{search_query}'")
+    print(f"🔍 Searching Google Images for candidate pool: '{search_query}'")
     url = "https://google.serper.dev/images"
     payload = json.dumps({"q": search_query})
     headers = {
@@ -423,11 +542,17 @@ def fetch_serper_image(search_query, output_dir, ignored_urls=None):
         images = data.get("images", [])
         if not images:
             print(f"  ⚠️ No images found on Google for '{search_query}'.")
-            return None, None
+            return [], []
             
         safe_name = "".join([c for c in search_query if c.isalnum()]).strip()
+        
+        downloaded_paths = []
+        downloaded_urls = []
 
         for img_data_entry in images:
+            if len(downloaded_paths) >= pool_size:
+                break
+                
             image_url = img_data_entry.get("imageUrl")
             if not image_url or image_url in ignored_urls:
                 continue
@@ -437,12 +562,13 @@ def fetch_serper_image(search_query, output_dir, ignored_urls=None):
             filepath = os.path.join(output_dir, filename)
             
             if os.path.exists(filepath):
-                 print(f"  ✅ Secured dynamic image (Cached): {filename}")
-                 return filepath, image_url
+                 downloaded_paths.append(filepath)
+                 downloaded_urls.append(image_url)
+                 continue
 
             try:
                 browser_headers = {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
                 }
                 
                 img_resp = requests.get(image_url, headers=browser_headers, timeout=10)
@@ -455,22 +581,63 @@ def fetch_serper_image(search_query, output_dir, ignored_urls=None):
                     img = img.convert("RGB")
                     
                 img.save(filepath, "JPEG")
-                print(f"  ✅ Secured dynamic image: {filename}")
-                return filepath, image_url
+                downloaded_paths.append(filepath)
+                downloaded_urls.append(image_url)
                 
-            except requests.exceptions.RequestException:
-                continue
-            except UnidentifiedImageError:
-                continue
             except Exception:
                 continue
         
-        print(f"  ❌ Failed to download ANY valid images for '{search_query}' after trying all results.")
-        return None, None
+        return downloaded_paths, downloaded_urls
         
     except Exception as e:
         print(f"  ⚠️ Serper API request failed for '{search_query}': {e}")
-        return None, None
+        return [], []
+
+def select_best_candidate_image(image_paths, search_query, profile):
+    if not image_paths:
+        return None, 0
+    if len(image_paths) == 1:
+        return image_paths[0], 0
+
+    print(f"🧠 [STAGE 4.1] Art Director evaluating {len(image_paths)} image candidates for '{search_query}'...")
+    prompt = profile.get("vision_selection_prompt", "...").replace("{query}", search_query)
+    contents = [prompt]
+
+    for i, path in enumerate(image_paths):
+        try:
+            img = Image.open(path)
+            img.thumbnail((512, 512))
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            img_byte_arr = io.BytesIO()
+            img.save(img_byte_arr, format='JPEG', quality=75)
+            contents.append(f"Candidate {i}:")
+            contents.append(types.Part.from_bytes(data=img_byte_arr.getvalue(), mime_type="image/jpeg"))
+        except Exception as img_err:
+            print(f"  ⚠️ Thumbnail processing failed for candidate {i}: {img_err}")
+            pass
+            
+    try:
+        response = generate_with_fallback(
+            contents=contents,
+            model_queue=ROUTING_LOGIC["vision_tasks"],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.1
+            )
+        )
+        data = clean_json_response(response.text)
+        best_idx = data.get("best_index", 0)
+        
+        if not isinstance(best_idx, int) or best_idx < 0 or best_idx >= len(image_paths):
+            best_idx = 0
+            
+        print(f"  🏆 Selected Candidate {best_idx} for '{search_query}'")
+        return image_paths[best_idx], best_idx
+        
+    except Exception as e:
+        print(f"  ⚠️ Art Director QA skipped (API issue): {e}. Defaulting to first image.")
+        return image_paths[0], 0
 
 # ==============================================================================
 # UPGRADED STAGE 4.5: GEMINI VISION QUALITY ASSURANCE (QA)
@@ -480,15 +647,13 @@ def analyze_and_filter_images(matched_effects, assets_dir, profile):
     if len(valid_effects) == 0:
         return matched_effects
 
-    print("🧠 [STAGE 4.5] Downscaling image data and using Gemini Vision for QA (Deduplication & Relevance Check)...")
+    print("🧠 [STAGE 4.5] Global QA Check (Deduplication & Flow Relevance)...")
     
-    # Pull the QA prompt from the profile JSON
     prompt = profile.get("vision_qa_prompt", "You are a QA Director. Flag indices of bad or identical images as JSON {'bad_indices': []}.")
     contents = [prompt]
     
     for i, effect in enumerate(valid_effects):
         try:
-            # Downscale image locally to save tokens
             img = Image.open(effect['local_path'])
             img.thumbnail((512, 512)) 
             
@@ -502,11 +667,7 @@ def analyze_and_filter_images(matched_effects, assets_dir, profile):
             contents.append(f"Image {i} (Intended Query: '{effect.get('search_query', 'Unknown')}'):")
             contents.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
         except Exception as img_err:
-            print(f"  ⚠️ Local compression failed for index {i}: {img_err}. Processing raw fallback...")
-            with open(effect['local_path'], "rb") as f:
-                img_bytes = f.read()
-            contents.append(f"Image {i} (Intended Query: '{effect.get('search_query', 'Unknown')}'):")
-            contents.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
+            pass
         
     try:
         response = generate_with_fallback(
@@ -517,30 +678,34 @@ def analyze_and_filter_images(matched_effects, assets_dir, profile):
                 temperature=0.1
             )
         )
-        data = json.loads(response.text)
+        data = clean_json_response(response.text)
         bad_indices = data.get("bad_indices", [])
         
         if not bad_indices:
-            print("  ✅ Gemini confirms all images are unique and highly relevant!")
+            print("  ✅ QA confirms sequence is unique and ready!")
             return matched_effects
             
-        print(f"  ⚠️ Gemini flagged bad/irrelevant images at indices: {bad_indices}. Swapping results...")
+        print(f"  ⚠️ QA flagged bad/duplicate images at sequence indices: {bad_indices}. Fetching replacements...")
         
         for idx in bad_indices:
             if isinstance(idx, int) and 0 <= idx < len(valid_effects):
                 bad_effect = valid_effects[idx]
-                print(f"  🔄 Re-fetching better source image for '{bad_effect['search_query']}'...")
                 
-                new_path, new_url = fetch_serper_image(
+                # Fetch a new pool, making sure we ignore the ones we already tried
+                paths, urls = fetch_serper_image_pool(
                     bad_effect['search_query'], 
-                    assets_dir, 
+                    assets_dir,
+                    pool_size=3,
                     ignored_urls=bad_effect.get('ignored_urls', [])
                 )
                 
-                if new_path:
+                if paths:
+                    new_path, new_idx = select_best_candidate_image(paths, bad_effect['search_query'], profile)
+                    
                     for effect in matched_effects:
                         if effect == bad_effect:
                             effect['local_path'] = new_path
+                            new_url = urls[new_idx] if urls else None
                             effect['source_url'] = new_url
                             if new_url: effect['ignored_urls'].append(new_url)
                             break
@@ -550,7 +715,6 @@ def analyze_and_filter_images(matched_effects, assets_dir, profile):
     except Exception as e:
         print(f"  ⚠️ AI QA skipped (Transient API/Quota issue): {e}. Proceeding safe.")
         return matched_effects
-
 
 def get_pexels_data(url):
     global current_pexels_idx
@@ -659,10 +823,15 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_e
     y_perc = vis_settings.get("caption_y_percentage", 0.60)
 
     clip_duration = audio_duration / len(valid_videos) if valid_videos else audio_duration
+    
     clips = []
+    base_clips = []
     
     for vid in valid_videos:
-        clip = VideoFileClip(vid).without_audio().set_fps(render_fps)
+        base_clip = VideoFileClip(vid)
+        base_clips.append(base_clip)
+        
+        clip = base_clip.without_audio().set_fps(render_fps)
         w, h = clip.size
         
         scale_w = target_w / float(w)
@@ -698,9 +867,7 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_e
         raw_text = text.upper()
         tight_kerning = -5 if RENDER_QUALITY != "test" else -2
         
-        # 🟢 DYNAMIC HIGHLIGHT COLOR 🟢
-        is_emphasized = text.isupper() and len(text) > 1
-        current_font_color = "#00FF00" if is_emphasized else font_color
+        current_font_color = font_color
         
         txt_shadow = TextClip(raw_text, fontsize=font_size, color=stroke_col, font=font_choice, stroke_color=stroke_col, stroke_width=stroke_thickness, kerning=tight_kerning, method='label', align='center')
         txt_stroke = TextClip(raw_text, fontsize=font_size, color=stroke_col, font=font_choice, stroke_color=stroke_col, stroke_width=stroke_thickness, kerning=tight_kerning, method='label', align='center')
@@ -722,8 +889,6 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_e
     
     sfx_dir = "sfx"
     
-    # 🔊 DYNAMIC SOUND EFFECTS MAP 🔊
-    # This precisely links the AI's short output to your exact filenames
     sfx_mapping = {
         "whoosh": "dragon-studio-simple-whoosh-382724.mp3",
         "thud": "dragon-studio-thud-sound-effect-405470.mp3",
@@ -734,19 +899,15 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_e
     }
     
     def image_overshoot_pop(t):
-        if t < 0.07:
-            return 0.10 + (1.10 / 0.07) * t
-        elif t < 0.14:
-            return 1.20 - (0.25 / 0.07) * (t - 0.07)
-        elif t < 0.20:
-            return 0.95 + (0.05 / 0.06) * (t - 0.14)
+        if t < 0.07: return 0.10 + (1.10 / 0.07) * t
+        elif t < 0.14: return 1.20 - (0.25 / 0.07) * (t - 0.07)
+        elif t < 0.20: return 0.95 + (0.05 / 0.06) * (t - 0.14)
         return 1.0
 
     for effect in matched_effects:
         start_time = float(effect.get('start', 0.0))
         image_type = effect.get('image_type', 'object').lower()
         
-        # Translates the AI trigger into your exact file
         sfx_type = effect.get('sfx_trigger', 'whoosh').lower()
         actual_filename = sfx_mapping.get(sfx_type, "dragon-studio-simple-whoosh-382724.mp3") 
         custom_sfx_path = os.path.join(sfx_dir, actual_filename)
@@ -754,13 +915,13 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_e
         
         if os.path.exists(custom_sfx_path):
             try:
-                sfx_clip = AudioFileClip(custom_sfx_path).set_start(start_time).fx(afx.volumex, 0.3)
+                sfx_clip = AudioFileClip(custom_sfx_path).set_start(start_time).fx(afx.volumex, 0.1)
                 sfx_clips.append(sfx_clip)
             except Exception as e:
-                print(f"  ⚠️ Skipping sound effect {custom_sfx_path}: {e}")
+                pass
         elif image_type == 'person' and os.path.exists(shutter_sfx_path):
             try:
-                sfx_clip = AudioFileClip(shutter_sfx_path).set_start(start_time).fx(afx.volumex, 0.3)
+                sfx_clip = AudioFileClip(shutter_sfx_path).set_start(start_time).fx(afx.volumex, 0.1)
                 sfx_clips.append(sfx_clip)
             except Exception as e:
                 pass
@@ -769,7 +930,6 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_e
             try:
                 fx_clip = ImageClip(effect['local_path'])
                 
-                # --- PRESERVE ASPECT RATIO & NORMALIZE SIZE ---
                 max_w = int(target_w * 0.8)
                 max_h = int(target_h * 0.45)
                 
@@ -777,7 +937,6 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_e
                 scale_factor = min(max_w / float(w), max_h / float(h))
                 
                 fx_clip = fx_clip.resize(scale_factor)
-                # ----------------------------------------------
                 
                 if fx_clip.mask is None:
                     fx_clip = fx_clip.add_mask()
@@ -831,6 +990,7 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_e
     audio.close()
     if bg_clip: bg_clip.close()
     for clip in clips: clip.close()
+    for base in base_clips: base.close() 
     for sfx in sfx_clips: sfx.close()
 
     print("🎉 Render complete and resources released.")
@@ -842,14 +1002,19 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_e
 
 def cleanup_workspace(assets_dir, bg_music_filename):
     print("🧹 Running surgical cleanup (Leaving history, bg_music, and debug files intact)...")
+    
+    time.sleep(1.5) 
+    
     for file in os.listdir(assets_dir):
-        if file.startswith("serper_") or file == "elevenlabs_debug_request.json":
+        if file == "elevenlabs_debug_request.json":
             continue
             
         if file.endswith(".mp4") or file.endswith(".jpg") or file.endswith(".png") or file == "voiceover.mp3" or "cache" in file:
             if file != bg_music_filename:
-                try: os.remove(os.path.join(assets_dir, file))
-                except Exception: pass
+                try: 
+                    os.remove(os.path.join(assets_dir, file))
+                except Exception as e: 
+                    print(f"  ⚠️ Could not delete {file}: {e}")
 
 # ==============================================================================
 # MAIN BATCH PIPELINE
@@ -877,7 +1042,6 @@ def main():
     os.makedirs(assets_dir, exist_ok=True)
     os.makedirs(base_output_dir, exist_ok=True)
 
-    # LOOP BATCH ENGINE
     for i in range(args.count):
         print(f"\n=======================================================")
         print(f"🎬 STARTING VIDEO {i+1} OF {args.count}")
@@ -886,9 +1050,11 @@ def main():
         is_batching = args.count > 1 
         history = load_history(history_file)
         
-        # STAGE 1: Writer
+        # STAGE 1 & 1.2: Writer & Script QA Evaluation
         gemini_data = generate_topic_script_tags(profile, history, script_cache, is_batching)
         title = gemini_data['title']
+        topic_summary = gemini_data.get('topic_summary', 'No summary provided')
+        history_entry = f"Title: '{title}' - Topic: {topic_summary}"
         
         safe_title = "".join([c for c in title if c.isalpha() or c.isdigit() or c==' ']).rstrip()
         base_filename = safe_title.replace(' ', '_')
@@ -907,16 +1073,17 @@ def main():
         # STAGE 3: Director / Video Editor AI
         matched_effects = generate_editor_effects(subs_data, profile, effects_cache, is_batching)
         
-        # STAGE 4: Initial Resource Sourcing
+        # STAGE 4 & 4.1: Initial Resource Sourcing & Candidate Image Selection QA
         for effect in matched_effects:
             if effect.get('search_query'):
-                local_path, source_url = fetch_serper_image(effect['search_query'], assets_dir)
-                if local_path:
-                    effect['local_path'] = local_path
-                    effect['source_url'] = source_url
-                    effect['ignored_urls'] = [source_url] if source_url else []
+                paths, urls = fetch_serper_image_pool(effect['search_query'], assets_dir, pool_size=3)
+                if paths:
+                    best_path, best_idx = select_best_candidate_image(paths, effect['search_query'], profile)
+                    effect['local_path'] = best_path
+                    effect['source_url'] = urls[best_idx] if urls else None
+                    effect['ignored_urls'] = urls
         
-        # STAGE 4.5: Upgraded Gemini QA
+        # STAGE 4.5: Upgraded Gemini QA Sequence Deduplication
         matched_effects = analyze_and_filter_images(matched_effects, assets_dir, profile)
         
         bg_music_path = local_bg_music if os.path.exists(local_bg_music) else None
@@ -931,7 +1098,7 @@ def main():
                 json.dump(gemini_data['metadata'], meta_f, indent=4)
             print(f"📦 Paired viral properties saved to: {metadata_output_path}")
         
-        save_history(history_file, title)
+        save_history(history_file, history_entry)
         
         if i < args.count - 1 or not DEV_MODE:
             cleanup_workspace(assets_dir, profile["bg_music_file"])
