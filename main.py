@@ -19,7 +19,8 @@ from google import genai
 from google.genai import types
 from google.genai.errors import APIError
 
-from moviepy.editor import VideoFileClip, AudioFileClip, TextClip, ImageClip, CompositeVideoClip, concatenate_videoclips, CompositeAudioClip
+# Added concatenate_audioclips here for the sentence-by-sentence stitching
+from moviepy.editor import VideoFileClip, AudioFileClip, TextClip, ImageClip, CompositeVideoClip, concatenate_videoclips, CompositeAudioClip, concatenate_audioclips
 import moviepy.video.fx.all as vfx
 import moviepy.audio.fx.all as afx
 
@@ -111,9 +112,14 @@ def generate_with_fallback(contents, model_queue, config=None):
 
 def clean_json_response(text):
     """Safely extracts and parses JSON even if the model wraps it in Markdown."""
+    
+    # Helper to strip trailing commas that cause JSONDecodeError
+    def strip_trailing_commas(json_string):
+        return re.sub(r',\s*([\]}])', r'\1', json_string)
+        
     try:
         # First attempt a direct parse
-        return json.loads(text)
+        return json.loads(strip_trailing_commas(text))
     except json.JSONDecodeError:
         pass
     
@@ -121,7 +127,7 @@ def clean_json_response(text):
     match = re.search(r"```(?:json)?(.*?)```", text, re.DOTALL)
     if match:
         try:
-            return json.loads(match.group(1).strip())
+            return json.loads(strip_trailing_commas(match.group(1).strip()))
         except json.JSONDecodeError:
             pass
             
@@ -130,7 +136,7 @@ def clean_json_response(text):
         start_idx = text.find('{')
         end_idx = text.rfind('}')
         if start_idx != -1 and end_idx != -1:
-            return json.loads(text[start_idx:end_idx+1])
+            return json.loads(strip_trailing_commas(text[start_idx:end_idx+1]))
     except json.JSONDecodeError:
         pass
         
@@ -168,25 +174,27 @@ def load_or_create_profile(profile_name):
             "caption_y_percentage": 0.60
         },
         "writer_prompt": """
-You are a viral YouTube Shorts, TikTok, and Instagram Reels producer specializing in hyper-retention storytelling. 
-Create a unique 45-second script concept based on fascinating facts, macabre history, bizarre science, or intriguing true stories.
+You are a viral YouTube Shorts producer studying channels like WonderingPanda7. 
+Create a unique 45-second script concept based on highly recognizable pop-culture brands, modern everyday items, or fast-food mysteries.
 
 Do NOT use any of these past topics: {history}
 
-🚨 CRITICAL HOOK & ENDING RULE:
-DO NOT start the script with "Imagine this", "Did you know", or by stating a year/date. 
-The first 3 seconds MUST be a "Curiosity Loop"—an unanswered question or a bizarre contradiction that naturally forces the brain to seek closure. Do not just state a shocking fact; set up an immediate, unresolved mystery that the viewer HAS to watch to understand.
-CRITICAL CTA ENDING: Instead of an abrupt cut, the script MUST conclude with a short, natural Call To Action (CTA). You must vary this CTA every time. Keep it punchy!
+🚨 CRITICAL HOOK & TONE RULE:
+Start the script with a specific historical date or year (e.g., "In 2016..." or "Back in 1990...") to instantly ground the story in reality. DO NOT use cliché AI openings like "Imagine this" or "Did you know". Keep the tone grounded, casual, and conversational. Do not use melodramatic AI phrases like "changed the world forever" or exaggerate facts. Talk like a normal person telling a cool true story.
 
-CRITICAL VISUAL B-ROLL RULE:
-The 'tags' array MUST contain exactly 16 highly descriptive TWO-WORD search phrases (e.g., "arctic ice", "vintage shipwreck", "dark blizzard") that match the chronological story beats for Pexels. Avoid abstract terms.
+🚨 CRITICAL STORY ARC RULE:
+The script MUST have a satisfying narrative arc: Setup -> Escalation -> Resolution. End on a punchy, satisfying final factual thought that wraps up the mystery so the viewer feels rewarded. Do NOT end abruptly or try to force a seamless loop.
 
-You must generate exactly 5 natural attempts at the spoken script so our producer can pick the best one. Do not force specific differences or themes between them; simply try to write the strongest possible version based on the rules above, 5 times.
+🚨 CRITICAL VISUAL B-ROLL RULE (THEMATIC CONSISTENCY):
+The 'tags' array MUST contain exactly 16 highly descriptive TWO-WORD search phrases for Pexels. 
+DO NOT try to match every single sentence with a new concept. Instead, pick ONE satisfying, highly relevant visual theme for the entire video (e.g., if the story is about McDonald's fries, the theme is "making fries"). All 16 tags must be variations of this exact theme.
 
-Output ONLY a JSON object with this exact structure:
+You must generate exactly 5 natural attempts at the spoken script so our producer can pick the best one.
+
+Output ONLY a valid JSON object with this exact structure (Ensure there are NO trailing commas):
 {
   "title": "Internal working title",
-  "topic_summary": "A 1-sentence factual description of the core historical event, person, or scientific phenomenon so we do not repeat it.",
+  "topic_summary": "A 1-sentence factual description of the core brand event so we do not repeat it.",
   "script_variations": [
     "Attempt 1: The spoken script. Around 110-130 words.",
     "Attempt 2: Another natural attempt at the script.",
@@ -226,7 +234,7 @@ Review the following script variations and select the one with the strongest cur
 Script Variations:
 {variations}
 
-Output ONLY a JSON object with the index (0-based) of the best script and a 1-sentence reason.
+Output ONLY a valid JSON object with the index (0-based) of the best script and a 1-sentence reason (Ensure there are NO trailing commas):
 {
   "best_index": 2,
   "reason": "Strongest opening hook that introduces an immediate, unresolved paradox."
@@ -238,7 +246,7 @@ You are an Audio Director preparing scripts for ElevenLabs AI narration. Your on
 You will receive a JSON object from a scriptwriter. Take the 'script' field and rewrite it for voice performance.
 
 🚨 CRITICAL PAUSE RULE:
-Do NOT use ellipses ("..."). Use commas for quick breaths and periods for full stops. Vary sentence lengths for a natural human cadence.
+Do NOT use ellipses ("..."). You MUST use standard punctuation like periods, exclamation marks, and question marks at the end of every sentence. Keep sentences relatively short and punchy for a fast-paced documentary style.
 
 🚨 CRITICAL DYNAMIC CAPTION RULE:
 You must explicitly target exactly 4 to 7 crucial, high-impact shock words to be completely UPPERCASE. These words will trigger custom color changes in production (e.g., 'That paint was PURE radium'). Do not over-capitalize.
@@ -249,32 +257,33 @@ Spell out ambiguous numbers, dates, and abbreviations exactly how they should be
 Raw Script:
 {script}
 
-Output ONLY a JSON object with this exact structure:
+Output ONLY a valid JSON object with this exact structure (Ensure there are NO trailing commas):
 {
-  "directed_script": "The continuous, fast-paced script here."
+  "directed_script": "The continuous, well-punctuated script here."
 }
 """,
         "editor_prompt": """
 You are a master Cinematic Video Editor and Sound Designer.
 I am going to provide you with the exact, word-by-word timestamps of a voiceover.
-Your job is to strategically pick 5 to 9 key moments in the timeline to flash a highly specific historical image on screen, AND assign an accompanying cinematic sound effect (SFX) to amplify the impact.
+Your job is to strategically pick 12 to 15 key moments in the timeline (roughly every 3 seconds) to flash a highly specific image on screen, AND assign an accompanying cinematic sound effect (SFX) to amplify the impact.
 
 Rules:
-1. Provide the exact 'start' time in seconds for the visual asset.
-2. Provide a 'search_query' for Google Images. It MUST be historically concrete and highly specific (e.g., "SS Baychimo stuck in ice 1931 photo", "Victor Lustig police mugshot"). NEVER use abstract concepts.
-3. Provide a 'duration' in seconds for the image overlay (usually 2.0 to 3.5).
+1. Provide the exact 'start' time in seconds for the visual asset. Space them out so the viewer sees a new image pop up every 2.5 to 4.0 seconds.
+2. Provide a 'search_query' for Google Images. It MUST be literal, physical, and highly specific to the exact brand or object (e.g., "McDonalds 1990s storefront", "carton of milk"). 
+🚨 STRICT BAN ON ABSTRACTIONS: NEVER use abstract concepts, metaphors, diagrams, or 3D renders. Only request concrete, real-world photographic evidence.
+3. Provide a 'duration' in seconds for the image overlay (usually 1.5 to 2.5 seconds to keep it fast-paced).
 4. Provide an 'image_type' ("person" or "object").
 5. Provide an 'sfx_trigger' classification based on the emotional beat. You MUST choose ONLY from these exact words: "whoosh", "thud", "newspaper", "pop", "shutter", or "swoosh".
 
 Voiceover Timestamps:
 {timestamps}
 
-Output ONLY a JSON object with this exact structure:
+Output ONLY a valid JSON object with this exact structure (Ensure there are NO trailing commas):
 {
   "effects": [
     {
       "start": 1.45,
-      "search_query": "SS Baychimo ghost ship arctic historical photo",
+      "search_query": "Toblerone gap change 2016 photo",
       "duration": 2.5,
       "image_type": "object",
       "sfx_trigger": "thud"
@@ -284,9 +293,9 @@ Output ONLY a JSON object with this exact structure:
 """,
         "vision_selection_prompt": """
 You are a Cinematic Art Director.
-I will provide you with multiple candidate images fetched for the historical search query: '{query}'.
-Your task is to select the single best image that is the highest quality, most visually striking, most historically relevant, and most cinematic. Avoid heavy watermarks, abstract illustrations, or completely irrelevant icons.
-Return ONLY a JSON object with the 0-based index of the chosen image.
+I will provide you with multiple candidate images fetched for the search query: '{query}'.
+Your task is to select the single best image that is the highest quality, most visually striking, most relevant, and most cinematic. Avoid heavy watermarks, abstract illustrations, or completely irrelevant icons.
+Return ONLY a valid JSON object with the 0-based index of the chosen image (Ensure there are NO trailing commas):
 {
   "best_index": 0
 }
@@ -295,12 +304,22 @@ Return ONLY a JSON object with the 0-based index of the chosen image.
 You are an expert Quality Assurance director for a documentary video.
 I am providing you with a sequence of images and their intended search queries.
 
-Your job is to flag any image that fails EITHER of these two rules:
+Your job is to flag any image that fails ANY of these three rules:
 1. Duplicate: The image is visually identical to an earlier image in the sequence.
-2. Irrelevant or Low Quality: The image clearly does NOT match its intended search query, is an abstract drawing/icon instead of a photo, contains heavy watermarks, or is completely nonsensical.
+2. Irrelevant: The image does not clearly match its intended search query.
+3. Abstract/Metaphorical/Fake: The image is a 3D render (e.g., a generic bank vault), a scientific diagram, a stock illustration, an icon, or a metaphor. We ONLY want literal, real-world photography.
 
-Return ONLY a JSON object containing a list of the 0-based indices of the images that fail these rules and must be replaced.
-Strict format: {"bad_indices": [1, 3]}
+Return ONLY a valid JSON object containing a list of the 0-based indices of the images that fail these rules and must be replaced (Ensure there are NO trailing commas):
+{"bad_indices": [1, 3]}
+""",
+        "video_selection_prompt": """
+You are a Cinematic Art Director.
+I will provide you with multiple static preview frames from candidate stock videos fetched for the concept: '{query}'.
+Your task is to select the single best video that is the highest quality, most visually striking, most literal, and most relevant to the story. Avoid completely abstract backgrounds or irrelevant clips.
+Return ONLY a valid JSON object with the 0-based index of the chosen video (Ensure there are NO trailing commas):
+{
+  "best_index": 0
+}
 """
     }
     
@@ -412,6 +431,10 @@ def direct_audio_script(raw_script, profile, audio_dir_cache_file, is_batching):
         
     return data
 
+# ==============================================================================
+# UPGRADED STAGE 2: SENTENCE-BY-SENTENCE AUDIO GENERATION
+# ==============================================================================
+
 def generate_audio_and_captions(script_text, profile, audio_path, timestamps_cache_file, is_batching):
     global current_eleven_idx
     
@@ -421,72 +444,103 @@ def generate_audio_and_captions(script_text, profile, audio_path, timestamps_cac
             subs = json.load(f)
         return audio_path, subs
 
-    print("🎙️ [STAGE 2] Generating ElevenLabs voiceover and extracting timeline...")
+    print("🎙️ [STAGE 2] Generating ElevenLabs voiceover sentence-by-sentence for maximum pacing...")
+    
+    # Split the script into individual sentences while preserving the punctuation for inflection
+    sentences = [s.strip() for s in re.findall(r'[^.!?]+[.!?]*', script_text) if s.strip()]
+    
+    all_subs = []
+    audio_clips = []
+    current_timeline_shift = 0.0
+    
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{profile['voice_id']}/with-timestamps"
-    data = {
-        "text": script_text,
-        "model_id": profile.get("voice_model", "eleven_multilingual_v2"),
-        "voice_settings": {
-            "stability": profile.get("voice_stability", 0.30), 
-            "similarity_boost": profile.get("voice_similarity", 0.55), 
-            "style": profile.get("voice_style", 0.80),
-            "speed": profile.get("voice_speed", 1.15),
-            "use_speaker_boost": True
+    
+    for i, sentence in enumerate(sentences):
+        print(f"   -> Processing sentence {i+1}/{len(sentences)}: {sentence[:30]}...")
+        data = {
+            "text": sentence,
+            "model_id": profile.get("voice_model", "eleven_multilingual_v2"),
+            "voice_settings": {
+                "stability": profile.get("voice_stability", 0.30), 
+                "similarity_boost": profile.get("voice_similarity", 0.55), 
+                "style": profile.get("voice_style", 0.80),
+                "speed": profile.get("voice_speed", 1.15),
+                "use_speaker_boost": True
+            }
         }
-    }
-    
-    debug_path = os.path.join(os.path.dirname(audio_path), "elevenlabs_debug_request.json")
-    try:
-        with open(debug_path, "w", encoding="utf-8") as f:
-            json.dump({"url": url, "payload": data}, f, indent=4)
-    except Exception as e:
-        print(f"   ⚠️ Could not save ElevenLabs debug file: {e}")
-    
-    start_idx = current_eleven_idx
-    while True:
-        headers = {"Content-Type": "application/json", "xi-api-key": ELEVEN_KEYS[current_eleven_idx]}
-        resp = requests.post(url, json=data, headers=headers)
         
-        if resp.status_code in [401, 402, 429]:
-            current_eleven_idx = (current_eleven_idx + 1) % len(ELEVEN_KEYS)
-            if current_eleven_idx == start_idx:
-                raise Exception("❌ CRITICAL: All ElevenLabs keys are exhausted.")
-            time.sleep(1)
-            continue
+        start_idx = current_eleven_idx
+        while True:
+            headers = {"Content-Type": "application/json", "xi-api-key": ELEVEN_KEYS[current_eleven_idx]}
+            resp = requests.post(url, json=data, headers=headers)
             
-        resp.raise_for_status()
-        response_data = resp.json()
-        
-        with open(audio_path, 'wb') as f:
+            if resp.status_code in [401, 402, 429]:
+                current_eleven_idx = (current_eleven_idx + 1) % len(ELEVEN_KEYS)
+                if current_eleven_idx == start_idx:
+                    raise Exception("❌ CRITICAL: All ElevenLabs keys are exhausted.")
+                time.sleep(1)
+                continue
+                
+            resp.raise_for_status()
+            response_data = resp.json()
+            break
+            
+        # Save temporary audio chunk for this specific sentence
+        temp_chunk_path = audio_path.replace(".mp3", f"_chunk_{i}.mp3")
+        with open(temp_chunk_path, 'wb') as f:
             f.write(base64.b64decode(response_data["audio_base64"]))
             
+        # Load the chunk into MoviePy
+        chunk_clip = AudioFileClip(temp_chunk_path)
+        audio_clips.append(chunk_clip)
+        
+        # Extract Word-Level Timestamps for this chunk
         chars = response_data["alignment"]["characters"]
         starts = response_data["alignment"]["character_start_times_seconds"]
         ends = response_data["alignment"]["character_end_times_seconds"]
 
         words, current_word, word_start = [], "", None
-        for i, char in enumerate(chars):
+        for j, char in enumerate(chars):
             if not char.isalnum() and char not in ["'", "’"]:
                 if current_word:
-                    end_idx = i - 1 if i > 0 else 0
+                    end_idx = j - 1 if j > 0 else 0
                     words.append((word_start, ends[end_idx], current_word))
                     current_word, word_start = "", None
             else:
-                if current_word == "": word_start = starts[i]
+                if current_word == "": word_start = starts[j]
                 current_word += char
                 
         if current_word: 
             words.append((word_start, ends[-1], current_word))
 
-        subs = []
+        # Add the words to the master subtitle list, shifted by the accumulated audio duration
         for w_start, w_end, word in words:
             if word: 
-                subs.append([w_start, w_end, word])
+                all_subs.append([w_start + current_timeline_shift, w_end + current_timeline_shift, word])
+                
+        # Advance the global timeline by EXACTLY the length of this sentence. 
+        # By adding 0 extra padding, the next sentence will start instantaneously.
+        current_timeline_shift += chunk_clip.duration
+        
+    print("   ✂️ Stitching sentences back together seamlessly...")
+    # Concatenate all sentence audio clips back-to-back with zero gap
+    final_audio = concatenate_audioclips(audio_clips)
+    final_audio.write_audiofile(audio_path, logger=None)
+    
+    # Clean up memory and delete temporary chunk files
+    final_audio.close()
+    for chunk in audio_clips:
+        chunk.close()
+    for i in range(len(sentences)):
+        chunk_path = audio_path.replace(".mp3", f"_chunk_{i}.mp3")
+        if os.path.exists(chunk_path):
+            os.remove(chunk_path)
 
-        with open(timestamps_cache_file, "w", encoding="utf-8") as f:
-            json.dump(subs, f, indent=4)
-            
-        return audio_path, subs
+    # Save the master unified timeline cache
+    with open(timestamps_cache_file, "w", encoding="utf-8") as f:
+        json.dump(all_subs, f, indent=4)
+        
+    return audio_path, all_subs
 
 def generate_editor_effects(subs_data, profile, effects_cache_file, is_batching):
     if DEV_MODE and not is_batching and os.path.exists(effects_cache_file):
@@ -639,6 +693,59 @@ def select_best_candidate_image(image_paths, search_query, profile):
         print(f"  ⚠️ Art Director QA skipped (API issue): {e}. Defaulting to first image.")
         return image_paths[0], 0
 
+def select_best_candidate_video(video_candidates, search_query, profile):
+    if not video_candidates:
+        return 0
+    if len(video_candidates) == 1:
+        return 0
+
+    print(f"🧠 [STAGE 4.2] Art Director evaluating {len(video_candidates)} video candidates for '{search_query}'...")
+    prompt = profile.get("video_selection_prompt", profile.get("vision_selection_prompt", "Pick the best index.")).replace("{query}", search_query)
+    contents = [prompt]
+
+    for i, vid in enumerate(video_candidates):
+        try:
+            # The 'image' field contains a static thumbnail of the video
+            preview_url = vid.get('image')
+            if not preview_url:
+                continue
+                
+            img_resp = requests.get(preview_url, timeout=10)
+            img = Image.open(io.BytesIO(img_resp.content))
+            img.thumbnail((512, 512)) # Resized to save tokens
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            
+            img_byte_arr = io.BytesIO()
+            img.save(img_byte_arr, format='JPEG', quality=75)
+            
+            contents.append(f"Candidate Video {i} Thumbnail:")
+            contents.append(types.Part.from_bytes(data=img_byte_arr.getvalue(), mime_type="image/jpeg"))
+        except Exception as img_err:
+            pass
+            
+    try:
+        response = generate_with_fallback(
+            contents=contents,
+            model_queue=ROUTING_LOGIC["vision_tasks"],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.1
+            )
+        )
+        data = clean_json_response(response.text)
+        best_idx = data.get("best_index", 0)
+        
+        if not isinstance(best_idx, int) or best_idx < 0 or best_idx >= len(video_candidates):
+            best_idx = 0
+            
+        print(f"  🏆 Selected Video Candidate {best_idx} for '{search_query}'")
+        return best_idx
+        
+    except Exception as e:
+        print(f"  ⚠️ Video Art Director QA skipped (API issue): {e}. Defaulting to random choice.")
+        return random.randint(0, len(video_candidates)-1)
+
 # ==============================================================================
 # UPGRADED STAGE 4.5: GEMINI VISION QUALITY ASSURANCE (QA)
 # ==============================================================================
@@ -731,26 +838,20 @@ def get_pexels_data(url):
         resp.raise_for_status()
         return resp.json()
 
-def download_b_roll(tags, assets_dir, is_batching): 
+def download_b_roll(tags, assets_dir, is_batching, profile): 
     required = 16
     existing = [os.path.join(assets_dir, f) for f in os.listdir(assets_dir) if f.startswith("broll_") and f.endswith(".mp4")]
     
     if DEV_MODE and not is_batching and len(existing) >= required:
         return sorted(existing)[:required]
 
-    print(f"🎬 Sourcing strictly ONE video per tag slot...")
+    print(f"🎬 Sourcing strictly ONE video per tag slot using AI Selection...")
     downloaded = []
     
     for i, tag in enumerate(tags[:required]):
         primary_keyword = tag.split()[0] if " " in tag else tag 
 
-        search_queries = [
-            tag, 
-            primary_keyword, 
-            "mystery",       
-            "abstract dark"  
-        ]
-        
+        search_queries = [tag, primary_keyword, "mystery", "abstract dark"]
         safe_tag = "".join([c for c in tag if c.isalnum() or c == ' ']).strip().replace(' ', '_')
         if not safe_tag: safe_tag = "fallback"
         
@@ -758,13 +859,16 @@ def download_b_roll(tags, assets_dir, is_batching):
         for query in search_queries:
             if slot_filled: break 
             
-            url = f"https://api.pexels.com/videos/search?query={query}&orientation=portrait&per_page=15"
+            # Fetch 5 candidates instead of 15 to keep token usage low
+            url = f"https://api.pexels.com/videos/search?query={query}&orientation=portrait&per_page=5"
             try:
                 data = get_pexels_data(url)
                 valid_videos_in_query = [v for v in data.get('videos', []) if v.get('duration', 0) >= 3]
                 
                 if valid_videos_in_query:
-                    video = random.choice(valid_videos_in_query)
+                    # ---> NEW AI SELECTION LOGIC <---
+                    best_vid_idx = select_best_candidate_video(valid_videos_in_query, query, profile)
+                    video = valid_videos_in_query[best_vid_idx]
                     
                     files = video.get('video_files', [])
                     hd_files = [v for v in files if v.get('quality') == 'hd' and v.get('width', 0) >= 720]
@@ -777,12 +881,12 @@ def download_b_roll(tags, assets_dir, is_batching):
                         f.write(vid_resp.content)
                     
                     downloaded.append(final_filename)
-                    print(f"   ✅ Slot {i+1}/16 filled: '{query}'")
+                    print(f"   ✅ Slot {i+1}/16 filled: '{query}' (Selected via AI)")
                     slot_filled = True
                     break
                         
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"   ⚠️ Pexels fetch error for '{query}': {e}")
                 
         if not slot_filled:
             print(f"   ⚠️ Exhausted options for '{tag}'. Using emergency fallback.")
@@ -1087,7 +1191,7 @@ def main():
         matched_effects = analyze_and_filter_images(matched_effects, assets_dir, profile)
         
         bg_music_path = local_bg_music if os.path.exists(local_bg_music) else None
-        valid_videos = download_b_roll(gemini_data['tags'], assets_dir, is_batching)
+        valid_videos = download_b_roll(gemini_data['tags'], assets_dir, is_batching, profile)
         
         # STAGE 5: Rendering
         _, returned_base_filename = assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_effects, title, video_out_dir, profile)
