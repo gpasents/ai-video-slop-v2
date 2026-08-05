@@ -14,6 +14,7 @@ assets*/*
 output*/
 uploaded/
 Ultimate
+local_gameplay/
 
 # 🧠 STATE / MEMORY
 # Keeps your local generated history separate from the public repo

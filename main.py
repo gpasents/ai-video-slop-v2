@@ -89,16 +89,20 @@ def generate_with_fallback(contents, model_queue, config=None):
                     model=model_name, contents=contents, config=config
                 )
                 return response
-            except APIError as e:
+            except Exception as e: # Broader exception catch for network drops
                 err_str = str(e).lower()
+                
+                # Check for rate limits first
                 if any(k in err_str for k in ["429", "quota", "exhausted", "limit"]):
                     print(f"⚠️ Key Index [{current_gemini_idx}] rate-limited on {model_name}. Cycling to next key...")
                     time.sleep(backoff)
                     backoff = min(backoff * 2, 15) 
                     break 
                 
-                print(f"⚠️ Model {model_name} failed on key index [{current_gemini_idx}]: {e}")
-                time.sleep(1)
+                # Handle everything else (like Server Disconnects or Timeouts)
+                print(f"⚠️ Model {model_name} failed on key index [{current_gemini_idx}] due to error: {e}")
+                print("   -> Retrying connection...")
+                time.sleep(2) # Give the network an extra second to breathe before retrying
                 continue
                 
         current_gemini_idx = (current_gemini_idx + 1) % len(GEMINI_KEYS)
@@ -112,18 +116,14 @@ def generate_with_fallback(contents, model_queue, config=None):
 
 def clean_json_response(text):
     """Safely extracts and parses JSON even if the model wraps it in Markdown."""
-    
-    # Helper to strip trailing commas that cause JSONDecodeError
     def strip_trailing_commas(json_string):
         return re.sub(r',\s*([\]}])', r'\1', json_string)
         
     try:
-        # First attempt a direct parse
         return json.loads(strip_trailing_commas(text))
     except json.JSONDecodeError:
         pass
     
-    # Try to find a JSON block wrapped in markdown
     match = re.search(r"```(?:json)?(.*?)```", text, re.DOTALL)
     if match:
         try:
@@ -131,7 +131,6 @@ def clean_json_response(text):
         except json.JSONDecodeError:
             pass
             
-    # As a last resort, try to extract everything between the first { and last }
     try:
         start_idx = text.find('{')
         end_idx = text.rfind('}')
@@ -155,10 +154,12 @@ def load_or_create_profile(profile_name):
         with open(profile_path, "r", encoding="utf-8") as f:
             return json.load(f)
             
-    print(f"⚠️ Profile '{profile_name}' not found. Auto-generating expanded Viral Variety profile...")
+    print(f"⚠️ Profile '{profile_name}' not found. Auto-generating expanded QA-heavy profile...")
     
     default_profile = {
-        "theme_name": "Viral Variety",
+        "theme_name": "Viral Variety (Paranoid QA)",
+        "b_roll_type": "pexels", 
+        "local_video_pool_dir": "local_gameplay",
         "voice_id": "TX3LPaxmHKxFdv7VOQHJ", 
         "voice_model": "eleven_multilingual_v2",
         "voice_stability": 0.30,
@@ -171,16 +172,40 @@ def load_or_create_profile(profile_name):
             "font_family": "Arial-Black",
             "font_color": "#FFFF00",
             "stroke_color": "black",
-            "caption_y_percentage": 0.60
+            "caption_y_percentage": 0.60,
+            "effect_y_percentage": 0.35 
         },
+        "topic_novelty_prompt": """
+You are a ruthless topic auditor. I will give you a PROPOSED TOPIC and a list of PAST TOPICS.
+Your ONLY job is to determine if the PROPOSED TOPIC is covering the exact same core event, company disaster, or historical story as ANY of the PAST TOPICS.
+
+PAST TOPICS:
+{history}
+
+PROPOSED TOPIC:
+Title: {title}
+Summary: {summary}
+
+Output ONLY a valid JSON object:
+{
+  "is_duplicate": true or false,
+  "reason": "1-sentence explanation of your ruling."
+}
+""",
         "writer_prompt": """
 You are a viral YouTube Shorts producer studying channels like WonderingPanda7. 
-Create a unique 45-second script concept based on highly recognizable pop-culture brands, modern everyday items, or fast-food mysteries.
+Create a unique 45-second script concept focused exclusively on legendary corporate blunders, massive PR disasters, or forgotten product failures from Fortune 500-level brands (like Coca-Cola, McDonald's, Nintendo, or Blockbuster). The topic MUST revolve around a massive company making a huge mistake, causing public outrage, or an accidental success.
 
-Do NOT use any of these past topics: {history}
+🚨 STRICT NO-REPEAT HISTORY BAN:
+You have already covered the following events. You are STRICTLY FORBIDDEN from using these companies or events again:
+{history}
+You MUST pick a completely new company and a completely different event.
 
 🚨 CRITICAL HOOK & TONE RULE:
-Start the script with a specific historical date or year (e.g., "In 2016..." or "Back in 1990...") to instantly ground the story in reality. DO NOT use cliché AI openings like "Imagine this" or "Did you know". Keep the tone grounded, casual, and conversational. Do not use melodramatic AI phrases like "changed the world forever" or exaggerate facts. Talk like a normal person telling a cool true story.
+Start the script by immediately introducing the massive financial cost, public stakes, or scale of the disaster (e.g., "Coca-Cola once risked a billion-dollar empire by destroying their own recipe."). DO NOT force a specific historical year or date into the opening; keep the story feeling timeless and evergreen. DO NOT use cliché AI openings like "Imagine this" or "Did you know". Keep the tone grounded, casual, and conversational. Do not use melodramatic AI phrases like "changed the world forever" or exaggerate facts. Talk like a normal person telling a cool true story.
+
+🚨 CRITICAL EMOTION RULE:
+The story must include a moment of intense public reaction, backlash, or unexpected consumer behavior. Use strong, factual verbs to describe how people reacted to the brand's decision.
 
 🚨 CRITICAL STORY ARC RULE:
 The script MUST have a satisfying narrative arc: Setup -> Escalation -> Resolution. End on a punchy, satisfying final factual thought that wraps up the mystery so the viewer feels rewarded. Do NOT end abruptly or try to force a seamless loop.
@@ -240,6 +265,19 @@ Output ONLY a valid JSON object with the index (0-based) of the best script and 
   "reason": "Strongest opening hook that introduces an immediate, unresolved paradox."
 }
 """,
+        "script_audit_prompt": """
+You are a ruthless Fact-Checker and Continuity Editor. 
+Review the following script for factual accuracy, logical flow, and brand consistency. 
+If the script contains logical gaps, contradicts itself, or mentions impossible historical events, rewrite it to be perfectly factual and logically sound while maintaining the exact same tone, word count, and pacing.
+
+Script to audit:
+{script}
+
+Output ONLY a valid JSON object with the audited script (Ensure there are NO trailing commas):
+{
+  "audited_script": "The perfectly corrected script..."
+}
+""",
         "audio_director_prompt": """
 You are an Audio Director preparing scripts for ElevenLabs AI narration. Your only job is to adjust HOW it reads aloud so a text-to-speech engine produces natural, confident, human-sounding narration.
 
@@ -264,14 +302,18 @@ Output ONLY a valid JSON object with this exact structure (Ensure there are NO t
 """,
         "editor_prompt": """
 You are a master Cinematic Video Editor and Sound Designer.
-I am going to provide you with the exact, word-by-word timestamps of a voiceover.
-Your job is to strategically pick 12 to 15 key moments in the timeline (roughly every 3 seconds) to flash a highly specific image on screen, AND assign an accompanying cinematic sound effect (SFX) to amplify the impact.
+Here is the FULL SCRIPT for the video you are editing. Read it carefully so you understand the story, the context, and the stakes:
+"{script}"
+
+I am going to provide you with the exact, word-by-word timestamps of the voiceover.
+Your job is to strategically pick 10 to 12 key moments in the timeline to flash an INTERESTING, highly specific image on screen, AND assign an accompanying cinematic sound effect (SFX) to amplify the impact.
 
 Rules:
-1. Provide the exact 'start' time in seconds for the visual asset. Space them out so the viewer sees a new image pop up every 2.5 to 4.0 seconds.
-2. Provide a 'search_query' for Google Images. It MUST be literal, physical, and highly specific to the exact brand or object (e.g., "McDonalds 1990s storefront", "carton of milk"). 
+1. Provide the exact 'start' time in seconds for the visual asset. Space them out so the viewer sees a new image pop up every 3.0 to 4.5 seconds to let the visual breathe.
+2. Provide a 'search_query' for Google Images. It MUST be literal, physical, and highly specific to the exact brand or object. 
+🚨 INTERESTING KEYWORDS RULE: To ensure we get interesting and dynamic results, use descriptive adjectives and action words in your search query based on the script's context (e.g., 'angry mob protest outside fast food restaurant', 'shattered glass factory floor', 'panicking corporate executives photo'). Do not just use boring 1-word queries.
 🚨 STRICT BAN ON ABSTRACTIONS: NEVER use abstract concepts, metaphors, diagrams, or 3D renders. Only request concrete, real-world photographic evidence.
-3. Provide a 'duration' in seconds for the image overlay (usually 1.5 to 2.5 seconds to keep it fast-paced).
+3. Provide a 'duration' in seconds for the image overlay (must be strictly between 2.0 and 3.0 seconds so the viewer has time to process it).
 4. Provide an 'image_type' ("person" or "object").
 5. Provide an 'sfx_trigger' classification based on the emotional beat. You MUST choose ONLY from these exact words: "whoosh", "thud", "newspaper", "pop", "shutter", or "swoosh".
 
@@ -283,31 +325,37 @@ Output ONLY a valid JSON object with this exact structure (Ensure there are NO t
   "effects": [
     {
       "start": 1.45,
-      "search_query": "Toblerone gap change 2016 photo",
+      "search_query": "angry customers holding signs outside store",
       "duration": 2.5,
-      "image_type": "object",
+      "image_type": "person",
       "sfx_trigger": "thud"
     }
   ]
 }
 """,
         "vision_selection_prompt": """
-You are a Cinematic Art Director.
-I will provide you with multiple candidate images fetched for the search query: '{query}'.
-Your task is to select the single best image that is the highest quality, most visually striking, most relevant, and most cinematic. Avoid heavy watermarks, abstract illustrations, or completely irrelevant icons.
+You are a Cinematic Art Director. 
+The video you are working on is titled: '{title}'
+Here is the full script for absolute context: "{script}"
+
+I will provide you with multiple candidate images fetched for the specific search query: '{query}'.
+Your task is to select the single best image that is the highest quality, most visually striking, most relevant to the EXACT moment in the script, and most cinematic. Avoid heavy watermarks, abstract illustrations, or completely irrelevant icons.
 Return ONLY a valid JSON object with the 0-based index of the chosen image (Ensure there are NO trailing commas):
 {
   "best_index": 0
 }
 """,
         "vision_qa_prompt": """
-You are an expert Quality Assurance director for a documentary video.
-I am providing you with a sequence of images and their intended search queries.
+You are an expert Quality Assurance director for a documentary video. 
+The overarching topic of this video is: "{title}".
+For absolute context, here is the full script of the video: "{script}"
 
-Your job is to flag any image that fails ANY of these three rules:
+I am providing you with a sequence of images and their intended search queries.
+Your job is to ruthlessly flag any image that fails ANY of these FOUR rules:
 1. Duplicate: The image is visually identical to an earlier image in the sequence.
-2. Irrelevant: The image does not clearly match its intended search query.
-3. Abstract/Metaphorical/Fake: The image is a 3D render (e.g., a generic bank vault), a scientific diagram, a stock illustration, an icon, or a metaphor. We ONLY want literal, real-world photography.
+2. Irrelevant or Out of Context: Every single picture must be highly relevant to the story and the specific search query. Even if the image is a funny picture, a meme, or a reaction shot, it MUST directly connect to the exact emotion, event, or subject being discussed in the script. Flag any image that feels random, disconnected, or loosely related.
+3. Abstract/Metaphorical/Fake: The image is a 3D render (e.g., a generic bank vault), a scientific diagram, a stock illustration, an icon, or a metaphor. We ONLY want literal, real-world photography or highly relevant reaction assets.
+4. BRAND CONTAMINATION (CRITICAL): Based on the topic '{title}' and the script, if an image clearly shows the logo or product of a direct competitor, it MUST be flagged. (e.g. If the topic is Budweiser, reject any image of Corona or Coors).
 
 Return ONLY a valid JSON object containing a list of the 0-based indices of the images that fail these rules and must be replaced (Ensure there are NO trailing commas):
 {"bad_indices": [1, 3]}
@@ -322,6 +370,12 @@ Return ONLY a valid JSON object with the 0-based index of the chosen video (Ensu
 }
 """
     }
+
+    if profile_name == "minecraft_variety":
+        default_profile["theme_name"] = "Minecraft Variety"
+        default_profile["b_roll_type"] = "local_pool"
+        default_profile["visual_settings"]["caption_y_percentage"] = 0.65 
+        default_profile["visual_settings"]["effect_y_percentage"] = 0.25
     
     with open(profile_path, "w", encoding="utf-8") as f:
         json.dump(default_profile, f, indent=4)
@@ -357,10 +411,8 @@ def evaluate_best_script(script_variations, profile):
                 temperature=0.2
             )
         )
-        
         data = clean_json_response(response.text)
         best_idx = data.get("best_index", 0)
-        
         if not isinstance(best_idx, int) or best_idx < 0 or best_idx >= len(script_variations):
             best_idx = 0
             
@@ -370,28 +422,81 @@ def evaluate_best_script(script_variations, profile):
         print(f"  ⚠️ Script QA failed: {e}. Defaulting to first variation.")
         return script_variations[0]
 
+def audit_script(script, profile):
+    print(f"🧠 [STAGE 1.3] Fact-Checker is aggressively auditing the script for logic and brand consistency...")
+    prompt = profile["script_audit_prompt"].replace("{script}", script)
+    
+    try:
+        response = generate_with_fallback(
+            contents=prompt,
+            model_queue=ROUTING_LOGIC["heavy_reasoning"],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.2
+            )
+        )
+        data = clean_json_response(response.text)
+        audited = data.get("audited_script", script)
+        print("  ✅ Script audit complete. Logic secured.")
+        return audited
+    except Exception as e:
+        print(f"  ⚠️ Script Audit failed: {e}. Proceeding with original script.")
+        return script
+
 def generate_topic_script_tags(profile, history, script_cache_file, is_batching):
     if DEV_MODE and not is_batching and os.path.exists(script_cache_file):
         print("♻️ DEV MODE: Loading script from cache...")
         with open(script_cache_file, "r", encoding="utf-8") as f:
             return json.load(f)
 
-    print("🧠 [STAGE 1] Brainstorming unique script variations and generating viral properties...")
-    prompt = profile["writer_prompt"].replace("{history}", json.dumps(history))
+    max_retries = 3
+    data = None
     
-    response = generate_with_fallback(
-        contents=prompt,
-        model_queue=ROUTING_LOGIC["heavy_reasoning"],
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            temperature=0.8 
+    for attempt in range(max_retries):
+        print(f"🧠 [STAGE 1] Brainstorming unique script variations... (Attempt {attempt+1}/{max_retries})")
+        prompt = profile["writer_prompt"].replace("{history}", json.dumps(history))
+        
+        response = generate_with_fallback(
+            contents=prompt,
+            model_queue=ROUTING_LOGIC["heavy_reasoning"],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.8 
+            )
         )
-    )
+        
+        data = clean_json_response(response.text)
+        title = data.get('title', 'Unknown')
+        summary = data.get('topic_summary', 'Unknown')
+        
+        if not history:
+            print(f"🎯 Topic Selected: {title}")
+            break
+            
+        print(f"🕵️ [STAGE 1.1] Bouncer AI checking if '{title}' is a duplicate...")
+        novelty_prompt = profile["topic_novelty_prompt"].replace("{history}", json.dumps(history)).replace("{title}", title).replace("{summary}", summary)
+        
+        try:
+            judge_response = generate_with_fallback(
+                contents=novelty_prompt,
+                model_queue=ROUTING_LOGIC["heavy_reasoning"],
+                config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.1)
+            )
+            judge_data = clean_json_response(judge_response.text)
+            is_duplicate = judge_data.get("is_duplicate", False)
+            
+            if is_duplicate:
+                print(f"  🚫 REJECTED: {judge_data.get('reason', 'Topic is a duplicate.')}")
+                if attempt == max_retries - 1:
+                    print("  ⚠️ Max retries reached. Forcing generation anyway.")
+            else:
+                print(f"  ✅ ACCEPTED: {title} is a brand new topic!")
+                break
+                
+        except Exception as e:
+            print(f"  ⚠️ Bouncer AI failed: {e}. Assuming topic is safe.")
+            break
     
-    data = clean_json_response(response.text)
-    print(f"🎯 Topic Selected: {data['title']}")
-    
-    # Run Script QA Selection
     variations = data.get('script_variations', [])
     if not variations and 'script' in data:
         variations = [data['script']]
@@ -399,7 +504,8 @@ def generate_topic_script_tags(profile, history, script_cache_file, is_batching)
         variations = ["Emergency fallback script."]
         
     best_script = evaluate_best_script(variations, profile)
-    data['script'] = best_script
+    audited_script = audit_script(best_script, profile)
+    data['script'] = audited_script
     
     with open(script_cache_file, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
@@ -446,7 +552,6 @@ def generate_audio_and_captions(script_text, profile, audio_path, timestamps_cac
 
     print("🎙️ [STAGE 2] Generating ElevenLabs voiceover sentence-by-sentence for maximum pacing...")
     
-    # Split the script into individual sentences while preserving the punctuation for inflection
     sentences = [s.strip() for s in re.findall(r'[^.!?]+[.!?]*', script_text) if s.strip()]
     
     all_subs = []
@@ -485,16 +590,13 @@ def generate_audio_and_captions(script_text, profile, audio_path, timestamps_cac
             response_data = resp.json()
             break
             
-        # Save temporary audio chunk for this specific sentence
         temp_chunk_path = audio_path.replace(".mp3", f"_chunk_{i}.mp3")
         with open(temp_chunk_path, 'wb') as f:
             f.write(base64.b64decode(response_data["audio_base64"]))
             
-        # Load the chunk into MoviePy
         chunk_clip = AudioFileClip(temp_chunk_path)
         audio_clips.append(chunk_clip)
         
-        # Extract Word-Level Timestamps for this chunk
         chars = response_data["alignment"]["characters"]
         starts = response_data["alignment"]["character_start_times_seconds"]
         ends = response_data["alignment"]["character_end_times_seconds"]
@@ -513,21 +615,16 @@ def generate_audio_and_captions(script_text, profile, audio_path, timestamps_cac
         if current_word: 
             words.append((word_start, ends[-1], current_word))
 
-        # Add the words to the master subtitle list, shifted by the accumulated audio duration
         for w_start, w_end, word in words:
             if word: 
                 all_subs.append([w_start + current_timeline_shift, w_end + current_timeline_shift, word])
                 
-        # Advance the global timeline by EXACTLY the length of this sentence. 
-        # By adding 0 extra padding, the next sentence will start instantaneously.
         current_timeline_shift += chunk_clip.duration
         
     print("   ✂️ Stitching sentences back together seamlessly...")
-    # Concatenate all sentence audio clips back-to-back with zero gap
     final_audio = concatenate_audioclips(audio_clips)
     final_audio.write_audiofile(audio_path, logger=None)
     
-    # Clean up memory and delete temporary chunk files
     final_audio.close()
     for chunk in audio_clips:
         chunk.close()
@@ -536,24 +633,23 @@ def generate_audio_and_captions(script_text, profile, audio_path, timestamps_cac
         if os.path.exists(chunk_path):
             os.remove(chunk_path)
 
-    # Save the master unified timeline cache
     with open(timestamps_cache_file, "w", encoding="utf-8") as f:
         json.dump(all_subs, f, indent=4)
         
     return audio_path, all_subs
 
-def generate_editor_effects(subs_data, profile, effects_cache_file, is_batching):
+def generate_editor_effects(subs_data, profile, effects_cache_file, is_batching, script_text):
     if DEV_MODE and not is_batching and os.path.exists(effects_cache_file):
         print("♻️ DEV MODE: Loading editor effects from cache...")
         with open(effects_cache_file, "r", encoding="utf-8") as f:
             return json.load(f)
 
-    print("🎬 [STAGE 3] Sending precise timeline to AI Director to plan visual impacts...")
+    print("🎬 [STAGE 3] Sending precise timeline and full script to AI Director to plan visual impacts...")
     
     compact_timeline = [{"start": w[0], "word": w[2]} for w in subs_data]
     timeline_str = json.dumps(compact_timeline)
     
-    prompt = profile["editor_prompt"].replace("{timestamps}", timeline_str)
+    prompt = profile["editor_prompt"].replace("{timestamps}", timeline_str).replace("{script}", script_text)
     
     response = generate_with_fallback(
         contents=prompt,
@@ -576,11 +672,11 @@ def generate_editor_effects(subs_data, profile, effects_cache_file, is_batching)
     return effects
 
 # --- STAGE 4: SERPER API MULTI-IMAGE FETCHER ---
-def fetch_serper_image_pool(search_query, output_dir, pool_size=3, ignored_urls=None):
+def fetch_serper_image_pool(search_query, output_dir, pool_size=8, ignored_urls=None):
     if ignored_urls is None:
         ignored_urls = []
         
-    print(f"🔍 Searching Google Images for candidate pool: '{search_query}'")
+    print(f"🔍 Searching Google Images for expanded candidate pool (up to {pool_size}): '{search_query}'")
     url = "https://google.serper.dev/images"
     payload = json.dumps({"q": search_query})
     headers = {
@@ -647,14 +743,14 @@ def fetch_serper_image_pool(search_query, output_dir, pool_size=3, ignored_urls=
         print(f"  ⚠️ Serper API request failed for '{search_query}': {e}")
         return [], []
 
-def select_best_candidate_image(image_paths, search_query, profile):
+def select_best_candidate_image(image_paths, search_query, profile, title, script):
     if not image_paths:
         return None, 0
     if len(image_paths) == 1:
         return image_paths[0], 0
 
     print(f"🧠 [STAGE 4.1] Art Director evaluating {len(image_paths)} image candidates for '{search_query}'...")
-    prompt = profile.get("vision_selection_prompt", "...").replace("{query}", search_query)
+    prompt = profile.get("vision_selection_prompt", "...").replace("{query}", search_query).replace("{title}", title).replace("{script}", script)
     contents = [prompt]
 
     for i, path in enumerate(image_paths):
@@ -668,7 +764,6 @@ def select_best_candidate_image(image_paths, search_query, profile):
             contents.append(f"Candidate {i}:")
             contents.append(types.Part.from_bytes(data=img_byte_arr.getvalue(), mime_type="image/jpeg"))
         except Exception as img_err:
-            print(f"  ⚠️ Thumbnail processing failed for candidate {i}: {img_err}")
             pass
             
     try:
@@ -705,14 +800,13 @@ def select_best_candidate_video(video_candidates, search_query, profile):
 
     for i, vid in enumerate(video_candidates):
         try:
-            # The 'image' field contains a static thumbnail of the video
             preview_url = vid.get('image')
             if not preview_url:
                 continue
                 
             img_resp = requests.get(preview_url, timeout=10)
             img = Image.open(io.BytesIO(img_resp.content))
-            img.thumbnail((512, 512)) # Resized to save tokens
+            img.thumbnail((512, 512))
             if img.mode != "RGB":
                 img = img.convert("RGB")
             
@@ -743,20 +837,20 @@ def select_best_candidate_video(video_candidates, search_query, profile):
         return best_idx
         
     except Exception as e:
-        print(f"  ⚠️ Video Art Director QA skipped (API issue): {e}. Defaulting to random choice.")
+        print(f"  ⚠️ Video Art Director QA skipped. Defaulting to random choice.")
         return random.randint(0, len(video_candidates)-1)
 
 # ==============================================================================
 # UPGRADED STAGE 4.5: GEMINI VISION QUALITY ASSURANCE (QA)
 # ==============================================================================
-def analyze_and_filter_images(matched_effects, assets_dir, profile):
+def analyze_and_filter_images(matched_effects, assets_dir, profile, title, script):
     valid_effects = [e for e in matched_effects if e.get('local_path') and os.path.exists(e['local_path'])]
     if len(valid_effects) == 0:
         return matched_effects
 
-    print("🧠 [STAGE 4.5] Global QA Check (Deduplication & Flow Relevance)...")
+    print("🧠 [STAGE 4.5] Paranoid Global QA Check (Deduplication, Relevance, & BRAND CONTAMINATION)...")
     
-    prompt = profile.get("vision_qa_prompt", "You are a QA Director. Flag indices of bad or identical images as JSON {'bad_indices': []}.")
+    prompt = profile.get("vision_qa_prompt", "...").replace("{title}", title).replace("{script}", script)
     contents = [prompt]
     
     for i, effect in enumerate(valid_effects):
@@ -789,25 +883,24 @@ def analyze_and_filter_images(matched_effects, assets_dir, profile):
         bad_indices = data.get("bad_indices", [])
         
         if not bad_indices:
-            print("  ✅ QA confirms sequence is unique and ready!")
+            print("  ✅ QA confirms sequence is unique, completely relevant to context, and brand-safe!")
             return matched_effects
             
-        print(f"  ⚠️ QA flagged bad/duplicate images at sequence indices: {bad_indices}. Fetching replacements...")
+        print(f"  ⚠️ QA flagged bad, irrelevant, or competitor images at indices: {bad_indices}. Fetching replacements...")
         
         for idx in bad_indices:
             if isinstance(idx, int) and 0 <= idx < len(valid_effects):
                 bad_effect = valid_effects[idx]
                 
-                # Fetch a new pool, making sure we ignore the ones we already tried
                 paths, urls = fetch_serper_image_pool(
                     bad_effect['search_query'], 
                     assets_dir,
-                    pool_size=3,
+                    pool_size=8,
                     ignored_urls=bad_effect.get('ignored_urls', [])
                 )
                 
                 if paths:
-                    new_path, new_idx = select_best_candidate_image(paths, bad_effect['search_query'], profile)
+                    new_path, new_idx = select_best_candidate_image(paths, bad_effect['search_query'], profile, title, script)
                     
                     for effect in matched_effects:
                         if effect == bad_effect:
@@ -839,6 +932,21 @@ def get_pexels_data(url):
         return resp.json()
 
 def download_b_roll(tags, assets_dir, is_batching, profile): 
+    b_roll_type = profile.get("b_roll_type", "pexels")
+    if b_roll_type == "local_pool":
+        pool_dir = profile.get("local_video_pool_dir", "local_gameplay")
+        os.makedirs(pool_dir, exist_ok=True)
+        
+        valid_videos = [os.path.join(pool_dir, f) for f in os.listdir(pool_dir) if f.endswith(".mp4")]
+        
+        if not valid_videos:
+            print(f"⚠️ No MP4 files found in '{pool_dir}'. Please drop your Minecraft videos there.")
+            return []
+            
+        selected_video = random.choice(valid_videos)
+        print(f"🎮 Sourcing background from local pool: {selected_video}")
+        return [selected_video] 
+
     required = 16
     existing = [os.path.join(assets_dir, f) for f in os.listdir(assets_dir) if f.startswith("broll_") and f.endswith(".mp4")]
     
@@ -859,14 +967,12 @@ def download_b_roll(tags, assets_dir, is_batching, profile):
         for query in search_queries:
             if slot_filled: break 
             
-            # Fetch 5 candidates instead of 15 to keep token usage low
             url = f"https://api.pexels.com/videos/search?query={query}&orientation=portrait&per_page=5"
             try:
                 data = get_pexels_data(url)
                 valid_videos_in_query = [v for v in data.get('videos', []) if v.get('duration', 0) >= 3]
                 
                 if valid_videos_in_query:
-                    # ---> NEW AI SELECTION LOGIC <---
                     best_vid_idx = select_best_candidate_video(valid_videos_in_query, query, profile)
                     video = valid_videos_in_query[best_vid_idx]
                     
@@ -900,9 +1006,6 @@ def download_b_roll(tags, assets_dir, is_batching, profile):
 def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_effects, final_title, output_dir, profile):
     print("🎞️ Stitching visual, audio, captions, and EFFECTS in MoviePy...")
     
-    # ---------------------------
-    # SETUP MASTER AUDIO TRACKS
-    # ---------------------------
     audio_tracks = []
     audio = AudioFileClip(audio_path)
     audio_duration = audio.duration
@@ -948,14 +1051,19 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_e
         if clip.duration < clip_duration:
             clip = clip.fx(vfx.loop, duration=clip_duration)
         else:
-            start_time = 1.0 if clip.duration >= (clip_duration + 1.0) else 0.0
+            b_roll_type = profile.get("b_roll_type", "pexels")
+            if b_roll_type == "local_pool" and clip.duration > clip_duration + 5.0:
+                max_start = clip.duration - clip_duration - 1.0
+                start_time = random.uniform(0.0, max_start)
+            else:
+                start_time = 1.0 if clip.duration >= (clip_duration + 1.0) else 0.0
+                
             clip = clip.subclip(start_time, start_time + clip_duration)
             
         clips.append(clip)
         
     final_visual = concatenate_videoclips(clips, method="compose")
     
-    # --- CAPTIONS ---
     text_clips = []
     def snappy_pop(t):
         if t < 0.075: return 0.85 + 2.66 * t  
@@ -987,12 +1095,10 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_e
         word_clip = CompositeVideoClip([txt_shadow, txt_stroke, txt_fill], size=(box_w, box_h)).resize(snappy_pop).set_position(('center', caption_y_pos)).set_start(start).set_end(end)
         text_clips.append(word_clip)
 
-    # --- EFFECTS LAYERING (PRESERVING ASPECT RATIO) ---
     effect_clips = []
     sfx_clips = []
     
     sfx_dir = "sfx"
-    
     sfx_mapping = {
         "whoosh": "dragon-studio-simple-whoosh-382724.mp3",
         "thud": "dragon-studio-thud-sound-effect-405470.mp3",
@@ -1035,7 +1141,7 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_e
                 fx_clip = ImageClip(effect['local_path'])
                 
                 max_w = int(target_w * 0.8)
-                max_h = int(target_h * 0.45)
+                max_h = int(target_h * 0.30) 
                 
                 w, h = fx_clip.size
                 scale_factor = min(max_w / float(w), max_h / float(h))
@@ -1051,7 +1157,11 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_e
                 def get_dynamic_pos(t, bh=base_h):
                     scale = image_overshoot_pop(t)
                     curr_h = bh * scale
-                    y = (target_h * 0.35) - (curr_h / 2)
+                    effect_y_perc = profile.get("visual_settings", {}).get("effect_y_percentage", 0.25)
+                    y = (target_h * effect_y_perc) - (curr_h / 2)
+                    
+                    min_y = target_h * 0.08
+                    y = max(min_y, y)
                     return ('center', y)
                 
                 fx_clip = (fx_clip
@@ -1060,7 +1170,7 @@ def assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_e
                            .resize(image_overshoot_pop) 
                            .set_position(get_dynamic_pos) 
                            .crossfadein(0.15) 
-                           .crossfadeout(0.2)) 
+                           .crossfadeout(0.1)) 
                 
                 effect_clips.append(fx_clip)
             except Exception as e:
@@ -1154,7 +1264,7 @@ def main():
         is_batching = args.count > 1 
         history = load_history(history_file)
         
-        # STAGE 1 & 1.2: Writer & Script QA Evaluation
+        # STAGE 1, 1.1, 1.2, & 1.3: Writer, Bouncer, QA Evaluation, and Fact Checking
         gemini_data = generate_topic_script_tags(profile, history, script_cache, is_batching)
         title = gemini_data['title']
         topic_summary = gemini_data.get('topic_summary', 'No summary provided')
@@ -1175,26 +1285,26 @@ def main():
         )
         
         # STAGE 3: Director / Video Editor AI
-        matched_effects = generate_editor_effects(subs_data, profile, effects_cache, is_batching)
+        matched_effects = generate_editor_effects(subs_data, profile, effects_cache, is_batching, final_spoken_script)
         
         # STAGE 4 & 4.1: Initial Resource Sourcing & Candidate Image Selection QA
         for effect in matched_effects:
             if effect.get('search_query'):
-                paths, urls = fetch_serper_image_pool(effect['search_query'], assets_dir, pool_size=3)
+                paths, urls = fetch_serper_image_pool(effect['search_query'], assets_dir, pool_size=8)
                 if paths:
-                    best_path, best_idx = select_best_candidate_image(paths, effect['search_query'], profile)
+                    best_path, best_idx = select_best_candidate_image(paths, effect['search_query'], profile, title, final_spoken_script)
                     effect['local_path'] = best_path
                     effect['source_url'] = urls[best_idx] if urls else None
                     effect['ignored_urls'] = urls
         
-        # STAGE 4.5: Upgraded Gemini QA Sequence Deduplication
-        matched_effects = analyze_and_filter_images(matched_effects, assets_dir, profile)
+        # STAGE 4.5: Upgraded Brand Contamination Sequence Deduplication
+        matched_effects = analyze_and_filter_images(matched_effects, assets_dir, profile, title, final_spoken_script)
         
         bg_music_path = local_bg_music if os.path.exists(local_bg_music) else None
         valid_videos = download_b_roll(gemini_data['tags'], assets_dir, is_batching, profile)
         
         # STAGE 5: Rendering
-        _, returned_base_filename = assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_effects, title, video_out_dir, profile)
+        final_mp4_path, returned_base_filename = assemble_video(audio_path, bg_music_path, valid_videos, subs_data, matched_effects, title, video_out_dir, profile)
         
         if 'metadata' in gemini_data:
             metadata_output_path = os.path.join(video_out_dir, f"{returned_base_filename}.json")
